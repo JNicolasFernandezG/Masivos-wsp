@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Masivos-wsp · Panel de Envíos y Recepción WhatsApp</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-dot"></div>
+        <div>
+          <h1>Masivos-wsp</h1>
+          <p class="subtitle">WAHA (GOWS) · Cola anti-baneo &amp; Webhooks en tiempo real</p>
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <div class="pill" id="pill-waha">
+          <span class="pill-label">WhatsApp:</span>
+          <strong id="waha-status-text">Consultando...</strong>
+        </div>
+        <div class="pill" id="pill-worker">
+          <span class="pill-label">Worker:</span>
+          <strong id="worker-status-text">-</strong>
+        </div>
+        <div class="pill" id="pill-sse">
+          <span class="pill-label">Tiempo real:</span>
+          <strong id="sse-status-text">Conectando...</strong>
+        </div>
+        <button id="btn-auth-modal" class="btn btn-secondary btn-sm hidden" type="button">
+          Token Admin
+        </button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="batches" type="button">Cola y Lotes</button>
+      <button class="tab" data-tab="new-batch" type="button">Nuevo Lote (~25)</button>
+      <button class="tab" data-tab="inbox" type="button">
+        Mensajes Entrantes <span class="badge hidden" id="inbox-badge">0</span>
+      </button>
+      <button class="tab" data-tab="waha" type="button">Conexión WAHA / QR</button>
+    </nav>
+
+    <main class="container">
+      <div id="global-alert" class="alert hidden"></div>
+
+      <!-- TAB: COLA Y LOTES -->
+      <section id="tab-batches" class="tab-panel active">
+        <div class="grid-2-wide">
+          <div class="card">
+            <div class="card-header">
+              <h2>Lotes registrados</h2>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-batches" type="button">
+                Actualizar
+              </button>
+            </div>
+            <div id="batches-list" class="stack">
+              <p class="muted">Cargando lotes...</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2 id="batch-detail-title">Detalle del lote</h2>
+              <div id="batch-detail-actions" class="row gap-xs"></div>
+            </div>
+            <div id="batch-detail-content">
+              <p class="muted">Selecciona un lote para inspeccionar el estado de cada envío.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: NUEVO LOTE -->
+      <section id="tab-new-batch" class="tab-panel">
+        <div class="grid-2">
+          <div class="card">
+            <h2>1. Origen del lote</h2>
+            <div class="form-group">
+              <label for="batch-name">Nombre del lote</label>
+              <input
+                id="batch-name"
+                type="text"
+                placeholder="Ej: Recordatorios cobranza 18/11"
+              />
+            </div>
+
+            <div class="source-switch">
+              <button type="button" class="btn btn-sm btn-primary" id="btn-mode-file">
+                Subir Excel / CSV
+              </button>
+              <button type="button" class="btn btn-sm btn-secondary" id="btn-mode-manual">
+                Pegar lista manual
+              </button>
+              <a class="btn btn-sm btn-ghost" href="/api/batches/sample.csv" download>
+                Descargar plantilla CSV
+              </a>
+            </div>
+
+            <div id="panel-mode-file" class="mode-box">
+              <label for="file-input">Archivo .xlsx o .csv</label>
+              <input id="file-input" type="file" accept=".xlsx,.csv,.txt" />
+              <p class="hint" id="file-info">
+                La primera fila debe contener los nombres de columna (ej. telefono, nombre, monto).
+              </p>
+            </div>
+
+            <div id="panel-mode-manual" class="mode-box hidden">
+              <label for="manual-input">Pega filas separadas por ";" o "," (incluyendo encabezado)</label>
+              <textarea
+                id="manual-input"
+                rows="7"
+                placeholder="telefono;nombre;nro_gestion;monto;fecha&#10;5491112345678;Ana Pérez;G-1042;$ 45.000;25/11/2026&#10;5491187654321;Carlos Gómez;G-1043;$ 62.500;26/11/2026"
+              ></textarea>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-parse-manual">
+                Cargar texto como tabla
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>2. Destinatarios y plantilla</h2>
+            <div class="grid-2-tight">
+              <div class="form-group">
+                <label for="phone-column">Columna de teléfono / chatId</label>
+                <select id="phone-column"></select>
+              </div>
+              <div class="form-group">
+                <label for="country-code">Código país por defecto (opcional)</label>
+                <input
+                  id="country-code"
+                  type="text"
+                  placeholder="Ej: 549"
+                />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="text-column">Columna de texto directo (si no usas plantilla)</label>
+              <select id="text-column">
+                <option value="">-- Usar plantilla de abajo --</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="template-input">Plantilla del mensaje (usa variables <code>{{columna}}</code>)</label>
+              <div id="variable-chips" class="chips"></div>
+              <textarea
+                id="template-input"
+                rows="4"
+                placeholder="Hola {{nombre}}, te recordamos la gestión {{nro_gestion}} por {{monto}} con vencimiento {{fecha}}."
+              ></textarea>
+              <p class="hint">
+                Regla anti-baneo: personaliza cada mensaje con datos reales y mantén lotes pequeños (~25 envíos).
+              </p>
+            </div>
+
+            <div class="row gap-sm">
+              <button type="button" class="btn btn-secondary" id="btn-preview-batch">
+                Previsualizar mensajes
+              </button>
+              <button type="button" class="btn btn-primary" id="btn-submit-batch" disabled>
+                Confirmar y encolar lote
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-md" id="preview-card">
+          <div class="card-header">
+            <h2>3. Previsualización antes de enviar</h2>
+            <label class="checkbox-inline">
+              <input type="checkbox" id="skip-invalid-check" />
+              Omitir filas inválidas al encolar
+            </label>
+          </div>
+          <div id="preview-warnings" class="stack-xs"></div>
+          <div id="preview-summary" class="muted">
+            Carga un archivo o lista manual y presiona "Previsualizar mensajes".
+          </div>
+          <div class="table-wrap mt-sm">
+            <table id="preview-table" class="hidden">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Entrada</th>
+                  <th>chatId normalizado</th>
+                  <th>Mensaje renderizado</th>
+                  <th>Validación</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: INBOX / WEBHOOKS -->
+      <section id="tab-inbox" class="tab-panel">
+        <div class="grid-2-inbox">
+          <div class="card">
+            <div class="card-header">
+              <h2>Conversaciones</h2>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-inbox" type="button">
+                Actualizar
+              </button>
+            </div>
+            <div class="form-group">
+              <input
+                id="inbox-search"
+                type="search"
+                placeholder="Buscar por número, chatId o texto..."
+              />
+            </div>
+            <div id="conversations-list" class="stack-xs">
+              <p class="muted">Aún no hay mensajes recibidos vía webhook.</p>
+            </div>
+          </div>
+
+          <div class="card chat-card">
+            <div class="card-header">
+              <div>
+                <h2 id="chat-title">Historial de mensajes</h2>
+                <p class="hint" id="chat-subtitle">
+                  Selecciona una conversación para ver mensajes y responder.
+                </p>
+              </div>
+            </div>
+            <div id="chat-messages" class="chat-stream">
+              <p class="muted">Sin conversación seleccionada.</p>
+            </div>
+            <form id="reply-form" class="reply-box">
+              <input
+                id="reply-chat-id"
+                type="text"
+                placeholder="chatId o teléfono (ej: 5491112345678@c.us)"
+                required
+              />
+              <div class="row gap-sm">
+                <input
+                  id="reply-text"
+                  type="text"
+                  placeholder="Escribe una respuesta..."
+                  required
+                />
+                <button type="submit" class="btn btn-primary">Enviar</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: WAHA / QR -->
+      <section id="tab-waha" class="tab-panel">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Sesión WAHA (motor GOWS)</h2>
+            <div id="waha-details" class="kv-list"></div>
+            <div class="row wrap gap-sm mt-md">
+              <button class="btn btn-primary" id="btn-waha-start" type="button">
+                Iniciar sesión
+              </button>
+              <button class="btn btn-secondary" id="btn-waha-qr" type="button">
+                Obtener / Actualizar QR
+              </button>
+              <button class="btn btn-secondary" id="btn-waha-restart" type="button">
+                Reiniciar
+              </button>
+              <button class="btn btn-secondary" id="btn-waha-stop" type="button">
+                Detener
+              </button>
+              <button class="btn btn-danger" id="btn-waha-logout" type="button">
+                Desvincular (Logout)
+              </button>
+            </div>
+
+            <hr class="divider" />
+            <h3>Vincular con código telefónico (alternativa al QR)</h3>
+            <form id="pairing-code-form" class="row gap-sm mt-xs">
+              <input
+                id="pairing-phone"
+                type="text"
+                placeholder="Número completo con código país, ej: 5491112345678"
+              />
+              <button class="btn btn-secondary" type="submit">Solicitar código</button>
+            </form>
+            <div id="pairing-code-result" class="mt-xs"></div>
+          </div>
+
+          <div class="card">
+            <h2>Código QR de vinculación</h2>
+            <div id="qr-container" class="qr-box">
+              <p class="muted">
+                Si la sesión está en estado <code>SCAN_QR_CODE</code>, presiona "Obtener / Actualizar QR".
+              </p>
+            </div>
+            <div class="callout mt-md">
+              <strong>Buenas prácticas anti-baneo</strong>
+              <ul>
+                <li>Usa una línea dedicada (nunca el número principal de la empresa).</li>
+                <li>Calienta el número 1–2 semanas con conversaciones reales antes de enviar lotes.</li>
+                <li>Mantén lotes pequeños (~25 mensajes) con pausa aleatoria de 20–60 s (activa por defecto).</li>
+                <li>La sesión se guarda en <code>./data/waha/sessions</code> para sobrevivir reinicios sin reescanear QR.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- MODAL TOKEN ADMIN -->
+    <div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-box">
+        <h2>Autenticación requerida</h2>
+        <p class="hint">
+          El servidor tiene <code>ADMIN_API_TOKEN</code> configurado. Ingresa el token para operar el panel.
+        </p>
+        <form id="auth-form" class="stack-sm mt-sm">
+          <input id="admin-token-input" type="password" placeholder="ADMIN_API_TOKEN" required />
+          <div class="row gap-sm">
+            <button type="submit" class="btn btn-primary">Guardar token</button>
+            <button type="button" class="btn btn-ghost" id="btn-close-auth">Cerrar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

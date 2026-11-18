@@ -1,0 +1,76 @@
+services:
+  waha:
+    image: ${WAHA_IMAGE:-devlikeapro/waha:latest}
+    container_name: masivos-waha
+    restart: unless-stopped
+    ports:
+      - "${WAHA_PORT:-3000}:3000"
+    environment:
+      - WHATSAPP_DEFAULT_ENGINE=GOWS
+      - WAHA_API_KEY=${WAHA_API_KEY:-cambia_esta_api_key_segura}
+      - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-cambia_esta_password}
+      - WHATSAPP_START_SESSION=${WAHA_SESSION:-default}
+      - WHATSAPP_HOOK_URL=${WHATSAPP_HOOK_URL:-http://app:4000/api/webhooks/waha}
+      - WHATSAPP_HOOK_EVENTS=message,message.any,session.status
+      - WHATSAPP_HOOK_HMAC_KEY=${WAHA_WEBHOOK_HMAC_KEY:-}
+      - WAHA_GOWS_DEVICE_REQUIRE_FULL_SYNC=false
+      - GODEBUG=netdns=go
+      - TZ=${TZ:-America/Argentina/Buenos_Aires}
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    volumes:
+      - ./data/waha/sessions:/app/.sessions
+      - ./data/waha/media:/app/.media
+    networks:
+      - masivos_net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: masivos-app
+    restart: unless-stopped
+    depends_on:
+      - waha
+    ports:
+      - "${APP_PORT:-4000}:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - HOST=0.0.0.0
+      - DATABASE_PATH=/app/data/masivos.db
+      - WAHA_BASE_URL=http://waha:3000
+      - WAHA_API_KEY=${WAHA_API_KEY:-cambia_esta_api_key_segura}
+      - WAHA_SESSION=${WAHA_SESSION:-default}
+      - WAHA_WEBHOOK_HMAC_KEY=${WAHA_WEBHOOK_HMAC_KEY:-}
+      - DEFAULT_COUNTRY_CODE=${DEFAULT_COUNTRY_CODE:-}
+      - WORKER_MIN_DELAY_MS=${WORKER_MIN_DELAY_MS:-20000}
+      - WORKER_MAX_DELAY_MS=${WORKER_MAX_DELAY_MS:-60000}
+      - WORKER_POLL_INTERVAL_MS=${WORKER_POLL_INTERVAL_MS:-3000}
+      - WORKER_SUGGESTED_BATCH_SIZE=${WORKER_SUGGESTED_BATCH_SIZE:-25}
+      - WORKER_MAX_BATCH_SIZE=${WORKER_MAX_BATCH_SIZE:-50}
+      - WORKER_ENABLED=${WORKER_ENABLED:-true}
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
+      - TZ=${TZ:-America/Argentina/Buenos_Aires}
+    volumes:
+      - ./data/app:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - masivos_net
+
+networks:
+  masivos_net:
+    driver: bridge
