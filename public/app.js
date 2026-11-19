@@ -1,6 +1,6 @@
 const state = {
-  adminToken: localStorage.getItem('masivos_admin_token') || '',
   authRequired: false,
+  authenticated: false,
   selectedBatchId: null,
   selectedChatId: null,
   unreadInbox: 0,
@@ -54,17 +54,48 @@ function hideAlert() {
   $('global-alert').classList.add('hidden');
 }
 
+function showLoginScreen(errorMessage = '') {
+  state.authenticated = false;
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  $('status-bar').classList.add('hidden');
+  $('app-nav').classList.add('hidden');
+  $('app-main').classList.add('hidden');
+  $('login-screen').classList.remove('hidden');
+
+  const errBox = $('login-error');
+  if (errorMessage) {
+    errBox.textContent = errorMessage;
+    errBox.classList.remove('hidden');
+  } else {
+    errBox.classList.add('hidden');
+  }
+  $('login-password').focus();
+}
+
+function showWorkspace(authRequired) {
+  state.authenticated = true;
+  state.authRequired = authRequired;
+  $('login-screen').classList.add('hidden');
+  $('status-bar').classList.remove('hidden');
+  $('app-nav').classList.remove('hidden');
+  $('app-main').classList.remove('hidden');
+  if (authRequired) {
+    $('btn-logout').classList.remove('hidden');
+  } else {
+    $('btn-logout').classList.add('hidden');
+  }
+}
+
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  if (state.adminToken) {
-    headers.set('X-Admin-Token', state.adminToken);
-  }
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
     state.authRequired = true;
-    $('btn-auth-modal').classList.remove('hidden');
-    $('auth-modal').classList.remove('hidden');
-    throw new Error('Se requiere ADMIN_API_TOKEN válido.');
+    showLoginScreen('Tu sesión expiró o requiere iniciar sesión.');
+    throw new Error('No autorizado.');
   }
 
   const contentType = res.headers.get('content-type') || '';
@@ -129,10 +160,6 @@ document.querySelectorAll('.tab').forEach((btn) => {
 async function refreshHealthAndWaha() {
   try {
     const health = await apiFetch('/api/health');
-    if (health.config?.authRequired) {
-      state.authRequired = true;
-      $('btn-auth-modal').classList.remove('hidden');
-    }
     if (health.config?.defaultCountryCode !== undefined) {
       $('country-code').value = health.config.defaultCountryCode;
     }
@@ -873,11 +900,7 @@ function connectSse() {
   if (state.eventSource) {
     state.eventSource.close();
   }
-  const url = state.adminToken
-    ? `/api/events?token=${encodeURIComponent(state.adminToken)}`
-    : '/api/events';
-
-  const es = new EventSource(url);
+  const es = new EventSource('/api/events');
   state.eventSource = es;
 
   es.addEventListener('connected', () => {
@@ -942,28 +965,69 @@ function connectSse() {
   });
 }
 
-// --- Modal Admin Token ---
-$('btn-auth-modal').addEventListener('click', () => {
-  $('admin-token-input').value = state.adminToken;
-  $('auth-modal').classList.remove('hidden');
-});
-
-$('btn-close-auth').addEventListener('click', () => {
-  $('auth-modal').classList.add('hidden');
-});
-
-$('auth-form').addEventListener('submit', async (e) => {
+// --- Login y cierre de sesión ---
+$('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  state.adminToken = $('admin-token-input').value.trim();
-  localStorage.setItem('masivos_admin_token', state.adminToken);
-  $('auth-modal').classList.add('hidden');
-  hideAlert();
-  connectSse();
-  await refreshHealthAndWaha();
-  await loadBatches();
+  const password = $('login-password').value;
+  const errBox = $('login-error');
+  const submitBtn = $('btn-login-submit');
+  errBox.classList.add('hidden');
+  submitBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errBox.textContent = data?.error || 'Clave incorrecta.';
+      errBox.classList.remove('hidden');
+      $('login-password').select();
+      return;
+    }
+
+    $('login-password').value = '';
+    showWorkspace(Boolean(data.authRequired));
+    connectSse();
+    await refreshHealthAndWaha();
+    await loadBatches();
+  } catch {
+    errBox.textContent = 'No se pudo conectar con el servidor.';
+    errBox.classList.remove('hidden');
+  } finally {
+    submitBtn.disabled = false;
+  }
 });
 
-// Inicialización
-connectSse();
-refreshHealthAndWaha();
-loadBatches();
+$('btn-logout').addEventListener('click', async () => {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch {
+    // Ignore network error on logout
+  }
+  showLoginScreen('');
+});
+
+async function initApp() {
+  try {
+    const res = await fetch('/api/auth/status');
+    const auth = await res.json();
+    if (auth.authRequired && !auth.authenticated) {
+      showLoginScreen('');
+      return;
+    }
+    showWorkspace(Boolean(auth.authRequired));
+    connectSse();
+    await refreshHealthAndWaha();
+    await loadBatches();
+  } catch {
+    showWorkspace(false);
+    connectSse();
+    refreshHealthAndWaha();
+    loadBatches();
+  }
+}
+
+initApp();

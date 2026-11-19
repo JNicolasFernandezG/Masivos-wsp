@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import multipart from '@fastify/multipart';
@@ -9,6 +8,7 @@ import type { SqliteDb } from './db/database.js';
 import { BatchRepository } from './repositories/batchRepository.js';
 import { LidRepository } from './repositories/lidRepository.js';
 import { MessageRepository } from './repositories/messageRepository.js';
+import { createAuthRoutes, isRequestAuthenticated } from './routes/authRoutes.js';
 import { createBatchRoutes } from './routes/batchRoutes.js';
 import { createEventRoutes } from './routes/eventRoutes.js';
 import { createHealthRoutes } from './routes/healthRoutes.js';
@@ -36,12 +36,6 @@ export interface BuildAppOptions {
   wahaClient: WahaClient;
   publicDir?: string;
   logger?: boolean;
-}
-
-function constantTimeTokenEquals(expected: string, provided: string): boolean {
-  const expectedHash = crypto.createHash('sha256').update(expected).digest();
-  const providedHash = crypto.createHash('sha256').update(provided).digest();
-  return crypto.timingSafeEqual(expectedHash, providedHash);
 }
 
 export function buildApp(options: BuildAppOptions): AppContext {
@@ -75,32 +69,24 @@ export function buildApp(options: BuildAppOptions): AppContext {
       if (!urlPath.startsWith('/api/')) {
         return;
       }
-      if (urlPath === '/api/health' || urlPath === '/api/webhooks/waha') {
+      if (
+        urlPath === '/api/health' ||
+        urlPath === '/api/webhooks/waha' ||
+        urlPath.startsWith('/api/auth/')
+      ) {
         return;
       }
 
-      const headerToken = req.headers['x-admin-token'];
-      const authHeader = req.headers.authorization;
-      const queryToken = (req.query as { token?: string } | undefined)?.token;
-
-      let provided = '';
-      if (typeof headerToken === 'string') {
-        provided = headerToken;
-      } else if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
-        provided = authHeader.slice(7).trim();
-      } else if (urlPath === '/api/events' && typeof queryToken === 'string') {
-        provided = queryToken;
-      }
-
-      if (!provided || !constantTimeTokenEquals(config.adminApiToken, provided)) {
+      if (!isRequestAuthenticated(req.headers, config.adminApiToken)) {
         return reply.status(401).send({
           ok: false,
-          error: 'No autorizado. Configura o ingresa ADMIN_API_TOKEN.',
+          error: 'No autorizado. Inicia sesión o envía ADMIN_API_TOKEN.',
         });
       }
     });
   }
 
+  app.register(createAuthRoutes(config));
   app.register(createHealthRoutes({ db, wahaClient, worker, config }));
   app.register(createWahaRoutes({ wahaClient, config }));
   app.register(createWebhookRoutes({ webhookService, config }));

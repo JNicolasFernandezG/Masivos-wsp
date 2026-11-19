@@ -46,8 +46,46 @@ describe('HTTP API integration', () => {
     expect(healthRes.json().config.authRequired).toBe(true);
     expect(healthRes.json().config.defaultMessageTemplate).toContain('Asistodo');
 
+    // Sin ADMIN_API_TOKEN debe devolver 401
     const unauthRes = await app.inject({ method: 'GET', url: '/api/batches' });
     expect(unauthRes.statusCode).toBe(401);
+
+    // Flujo de login simple contra ADMIN_API_TOKEN (.env)
+    const statusBefore = await app.inject({ method: 'GET', url: '/api/auth/status' });
+    expect(statusBefore.statusCode).toBe(200);
+    expect(statusBefore.json()).toEqual({ authRequired: true, authenticated: false });
+
+    const badLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { password: 'clave-incorrecta' },
+    });
+    expect(badLogin.statusCode).toBe(401);
+
+    const goodLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { password: adminToken },
+    });
+    expect(goodLogin.statusCode).toBe(200);
+    const setCookie = goodLogin.headers['set-cookie'];
+    const cookieHeader = Array.isArray(setCookie) ? setCookie[0].split(';')[0] : String(setCookie).split(';')[0];
+    expect(cookieHeader).toContain('masivos_session=');
+
+    const batchesWithCookie = await app.inject({
+      method: 'GET',
+      url: '/api/batches',
+      headers: { cookie: cookieHeader },
+    });
+    expect(batchesWithCookie.statusCode).toBe(200);
+
+    const logoutRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/logout',
+      headers: { cookie: cookieHeader },
+    });
+    expect(logoutRes.statusCode).toBe(200);
+    expect(String(logoutRes.headers['set-cookie'])).toContain('Max-Age=0');
 
     // Crear lote usando plantilla por defecto de Asistodo (sin enviar template explícito)
     // Incluye un teléfono duplicado que debe omitirse automáticamente

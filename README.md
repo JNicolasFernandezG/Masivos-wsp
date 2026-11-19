@@ -71,7 +71,7 @@ npm run worker
 
 ## API REST principal
 
-Si `ADMIN_API_TOKEN` está definido, envía `X-Admin-Token: <token>` o `Authorization: Bearer <token>` en `/api/*` (excepto `/api/health` y `/api/webhooks/waha`, que valida `X-Webhook-Hmac` con SHA-512).
+Si `ADMIN_API_TOKEN` está definido en `.env`, el panel web solicita esa clave en la pantalla de login (`POST /api/auth/login`, sesión por cookie `HttpOnly` de 12 h) y las integraciones externas pueden enviar `X-Admin-Token: <clave>` o `Authorization: Bearer <clave>` en `/api/*` (excepto `/api/health`, `/api/auth/*` y `/api/webhooks/waha`, que valida `X-Webhook-Hmac` con SHA-512).
 
 - `GET /api/health` — Estado de DB, conectividad con WAHA y estado del worker.
 - `GET /api/waha/session` / `POST /api/waha/session/start` / `GET /api/waha/qr` — Control de sesión y QR.

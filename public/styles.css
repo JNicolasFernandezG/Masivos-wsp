@@ -666,3 +666,16 @@ th {
   border-radius: var(--radius);
   padding: 1.25rem;
 }
+
+.login-screen {
+  min-height: calc(100vh - 80px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.login-box {
+  width: min(420px, 100%);
+  padding: 1.5rem;
+}

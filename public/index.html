@@ -16,7 +16,7 @@
         </div>
       </div>
 
-      <div class="status-bar">
+      <div class="status-bar hidden" id="status-bar">
         <div class="pill" id="pill-waha">
           <span class="pill-label">WhatsApp:</span>
           <strong id="waha-status-text">Consultando...</strong>
@@ -33,13 +33,38 @@
           <span class="pill-label">Tiempo real:</span>
           <strong id="sse-status-text">Conectando...</strong>
         </div>
-        <button id="btn-auth-modal" class="btn btn-secondary btn-sm hidden" type="button">
-          Token Admin
+        <button id="btn-logout" class="btn btn-secondary btn-sm hidden" type="button">
+          Salir
         </button>
       </div>
     </header>
 
-    <nav class="tabs" role="tablist">
+    <section id="login-screen" class="login-screen hidden">
+      <div class="card login-box">
+        <h2>Iniciar sesión</h2>
+        <p class="hint">
+          Ingresa la clave configurada en <code>ADMIN_API_TOKEN</code> dentro del archivo <code>.env</code>.
+        </p>
+        <div id="login-error" class="alert err hidden mt-sm"></div>
+        <form id="login-form" class="stack-sm mt-md">
+          <div class="form-group">
+            <label for="login-password">Clave de acceso</label>
+            <input
+              id="login-password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="Ingresa la clave"
+              required
+            />
+          </div>
+          <button type="submit" class="btn btn-primary" id="btn-login-submit">
+            Ingresar
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <nav class="tabs hidden" id="app-nav" role="tablist">
       <button class="tab active" data-tab="batches" type="button">Cola y Lotes</button>
       <button class="tab" data-tab="new-batch" type="button">Nuevo Lote</button>
       <button class="tab" data-tab="inbox" type="button">
@@ -48,7 +73,7 @@
       <button class="tab" data-tab="waha" type="button">Conexión WAHA / QR</button>
     </nav>
 
-    <main class="container">
+    <main class="container hidden" id="app-main">
       <div id="global-alert" class="alert hidden"></div>
 
       <!-- TAB: COLA Y LOTES -->
@@ -322,23 +347,6 @@
         </div>
       </section>
     </main>
-
-    <!-- MODAL TOKEN ADMIN -->
-    <div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true">
-      <div class="modal-box">
-        <h2>Autenticación requerida</h2>
-        <p class="hint">
-          El servidor tiene <code>ADMIN_API_TOKEN</code> configurado. Ingresa el token para operar el panel.
-        </p>
-        <form id="auth-form" class="stack-sm mt-sm">
-          <input id="admin-token-input" type="password" placeholder="ADMIN_API_TOKEN" required />
-          <div class="row gap-sm">
-            <button type="submit" class="btn btn-primary">Guardar token</button>
-            <button type="button" class="btn btn-ghost" id="btn-close-auth">Cerrar</button>
-          </div>
-        </form>
-      </div>
-    </div>
 
     <script src="/app.js" type="module"></script>
   </body>

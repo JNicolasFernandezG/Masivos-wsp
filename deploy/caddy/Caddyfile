@@ -38,7 +38,7 @@
 		}
 	}
 
-	@allowed path / /index.html /styles.css /app.js /favicon.ico /api/health /api/waha/* /api/batches /api/batches/* /api/messages /api/messages/* /api/conversations
+	@allowed path / /index.html /styles.css /app.js /favicon.ico /api/health /api/auth/* /api/waha/* /api/batches /api/batches/* /api/messages /api/messages/* /api/conversations
 	handle @allowed {
 		reverse_proxy app:4000
 	}
