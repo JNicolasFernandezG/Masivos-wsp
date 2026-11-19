@@ -1,14 +1,36 @@
 import crypto from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import type { BatchRepository, OutboundMessageRecord } from '../repositories/batchRepository.js';
+import {
+  checkBusinessHours,
+  getNextBusinessDayStart,
+  getStartOfLocalDayUtc,
+} from '../services/businessHours.js';
 import type { EventBus } from '../services/eventBus.js';
 import type { WahaClient } from '../services/wahaClient.js';
+
+export type WorkerPauseReason =
+  | 'NONE'
+  | 'MESSAGE_JITTER'
+  | 'CHUNK_PAUSE'
+  | 'DAILY_LIMIT_REACHED'
+  | 'OUTSIDE_HOURS'
+  | 'NON_BUSINESS_DAY'
+  | 'SESSION_NOT_READY';
 
 export interface WorkerRuntimeStatus {
   enabled: boolean;
   running: boolean;
   busy: boolean;
   sessionStatus: string;
+  pauseReason: WorkerPauseReason;
+  sentToday: number;
+  dailyLimit: number;
+  chunkSize: number;
+  sentInCurrentChunk: number;
+  businessHoursEnabled: boolean;
+  businessHoursWindow: string;
+  timezone: string;
   lastSentAt: string | null;
   nextSendAt: string | null;
   currentMessageId: number | null;
@@ -25,7 +47,11 @@ export interface BatchWorkerDeps {
   sleepFn?: (ms: number, signal: AbortSignal) => Promise<void>;
   randomIntFn?: (min: number, maxInclusive: number) => number;
   nowFn?: () => number;
+  maxSleepSliceMs?: number;
 }
+
+const STATE_CHUNK_PAUSE_UNTIL = 'chunk_pause_until';
+const STATE_CONSECUTIVE_SENT = 'consecutive_sent_since_chunk_pause';
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0 || signal.aborted) {
@@ -53,14 +79,17 @@ export class BatchWorker {
   private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   private readonly randomInt: (min: number, maxInclusive: number) => number;
   private readonly now: () => number;
+  private readonly maxSleepSliceMs: number;
 
   private abortController: AbortController | null = null;
   private loopPromise: Promise<void> | null = null;
   private running = false;
   private busy = false;
   private sessionStatus = 'UNKNOWN';
+  private pauseReason: WorkerPauseReason = 'NONE';
   private lastSentAtMs: number | null = null;
   private nextAllowedSendAtMs: number | null = null;
+  private nextJitterSendAtMs: number | null = null;
   private currentMessageId: number | null = null;
   private lastError: string | null = null;
 
@@ -68,17 +97,50 @@ export class BatchWorker {
     this.sleep = deps.sleepFn ?? defaultSleep;
     this.randomInt = deps.randomIntFn ?? defaultRandomInt;
     this.now = deps.nowFn ?? Date.now;
+    this.maxSleepSliceMs = deps.maxSleepSliceMs ?? 15000;
+  }
+
+  private getSentTodayCount(nowMs: number): number {
+    const startOfToday = getStartOfLocalDayUtc(new Date(nowMs), this.deps.config.timezone);
+    return this.deps.batchRepo.countSentSince(startOfToday.toISOString());
+  }
+
+  private getConsecutiveChunkCount(): number {
+    const raw = this.deps.batchRepo.getWorkerState(STATE_CONSECUTIVE_SENT);
+    const num = raw ? Number(raw) : 0;
+    return Number.isFinite(num) && num >= 0 ? num : 0;
+  }
+
+  private getChunkPauseUntilMs(): number | null {
+    const raw = this.deps.batchRepo.getWorkerState(STATE_CHUNK_PAUSE_UNTIL);
+    if (!raw) return null;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : null;
   }
 
   getStatus(): WorkerRuntimeStatus {
+    const nowMs = this.now();
+    const sentToday = this.getSentTodayCount(nowMs);
+    const lastSent = this.lastSentAtMs
+      ? new Date(this.lastSentAtMs).toISOString()
+      : this.deps.batchRepo.getLastSentMessage()?.sent_at ?? null;
+
     return {
       enabled: this.deps.config.workerEnabled,
       running: this.running,
       busy: this.busy,
       sessionStatus: this.sessionStatus,
-      lastSentAt: this.lastSentAtMs ? new Date(this.lastSentAtMs).toISOString() : null,
+      pauseReason: this.pauseReason,
+      sentToday,
+      dailyLimit: this.deps.config.workerDailyLimit,
+      chunkSize: this.deps.config.workerChunkSize,
+      sentInCurrentChunk: this.getConsecutiveChunkCount(),
+      businessHoursEnabled: this.deps.config.businessHoursEnabled,
+      businessHoursWindow: `${this.deps.config.businessHoursStart}–${this.deps.config.businessHoursEnd}`,
+      timezone: this.deps.config.timezone,
+      lastSentAt: lastSent,
       nextSendAt:
-        this.nextAllowedSendAtMs && this.nextAllowedSendAtMs > this.now()
+        this.nextAllowedSendAtMs && this.nextAllowedSendAtMs > nowMs
           ? new Date(this.nextAllowedSendAtMs).toISOString()
           : null,
       currentMessageId: this.currentMessageId,
@@ -111,6 +173,16 @@ export class BatchWorker {
     this.emitStatus();
   }
 
+  private async sleepUntilOrSlice(
+    targetMs: number,
+    signal: AbortSignal
+  ): Promise<void> {
+    const remaining = targetMs - this.now();
+    if (remaining <= 0 || signal.aborted) return;
+    const slice = Math.min(remaining, this.maxSleepSliceMs);
+    await this.sleep(slice, signal);
+  }
+
   /**
    * Executes one iteration of the queue worker. Exposed for deterministic testing.
    * Returns true if a message send was attempted, false if idle or deferred.
@@ -119,26 +191,96 @@ export class BatchWorker {
     const abortSignal = signal ?? new AbortController().signal;
     const nextPending = this.deps.batchRepo.findNextPendingMessage();
     if (!nextPending) {
+      this.pauseReason = 'NONE';
       this.nextAllowedSendAtMs = null;
       return false;
     }
 
-    if (this.nextAllowedSendAtMs !== null) {
-      const waitMs = this.nextAllowedSendAtMs - this.now();
-      if (waitMs > 0) {
-        this.emitStatus();
-        await this.sleep(waitMs, abortSignal);
-        if (abortSignal.aborted) return false;
-      }
+    const nowMs = this.now();
+
+    // 1. Strict business hours check
+    const bh = checkBusinessHours(new Date(nowMs), this.deps.config);
+    if (!bh.allowed) {
+      this.pauseReason = bh.reason ?? 'OUTSIDE_HOURS';
+      this.nextAllowedSendAtMs = bh.nextWindowStart ? bh.nextWindowStart.getTime() : null;
+      this.emitStatus();
+      await this.sleepUntilOrSlice(
+        this.nextAllowedSendAtMs ?? nowMs + this.deps.config.workerPollIntervalMs,
+        abortSignal
+      );
+      return false;
     }
 
-    // Re-check after waiting in case the batch was paused or cancelled during jitter.
+    // 2. Strict daily limit check
+    const sentToday = this.getSentTodayCount(nowMs);
+    if (sentToday >= this.deps.config.workerDailyLimit) {
+      const nextDayStart = getNextBusinessDayStart(new Date(nowMs), this.deps.config);
+      this.pauseReason = 'DAILY_LIMIT_REACHED';
+      this.nextAllowedSendAtMs = nextDayStart
+        ? nextDayStart.getTime()
+        : getStartOfLocalDayUtc(new Date(nowMs + 86400000), this.deps.config.timezone).getTime();
+      this.emitStatus();
+      await this.sleepUntilOrSlice(this.nextAllowedSendAtMs, abortSignal);
+      return false;
+    }
+
+    // 3. Persistent inter-chunk pause check (45–60 min max between tandas of 25)
+    const chunkPauseUntilMs = this.getChunkPauseUntilMs();
+    if (chunkPauseUntilMs !== null) {
+      if (chunkPauseUntilMs > nowMs) {
+        this.pauseReason = 'CHUNK_PAUSE';
+        this.nextAllowedSendAtMs = chunkPauseUntilMs;
+        this.emitStatus();
+        await this.sleepUntilOrSlice(chunkPauseUntilMs, abortSignal);
+        return false;
+      }
+      // Pause finished: clear persisted pause & reset counter for new chunk
+      this.deps.batchRepo.setWorkerState(STATE_CHUNK_PAUSE_UNTIL, null);
+      this.deps.batchRepo.setWorkerState(STATE_CONSECUTIVE_SENT, '0');
+    }
+
+    // Also auto-reset chunk counter if naturally idle longer than min chunk pause
+    const lastSentRecord = this.deps.batchRepo.getLastSentMessage();
+    const lastSentTimeMs =
+      this.lastSentAtMs ?? (lastSentRecord ? Date.parse(lastSentRecord.sent_at) : null);
+    if (
+      lastSentTimeMs !== null &&
+      this.deps.config.workerChunkPauseMinMs > 0 &&
+      nowMs - lastSentTimeMs >= this.deps.config.workerChunkPauseMinMs &&
+      this.getConsecutiveChunkCount() > 0
+    ) {
+      this.deps.batchRepo.setWorkerState(STATE_CONSECUTIVE_SENT, '0');
+    }
+
+    // 4. Per-message anti-ban jitter (20–60 s)
+    if (this.nextJitterSendAtMs !== null && this.nextJitterSendAtMs > nowMs) {
+      this.pauseReason = 'MESSAGE_JITTER';
+      this.nextAllowedSendAtMs = this.nextJitterSendAtMs;
+      this.emitStatus();
+      await this.sleep(this.nextJitterSendAtMs - nowMs, abortSignal);
+      if (abortSignal.aborted) return false;
+    }
+
+    // Re-check business hours and pending message after sleeping
+    const postSleepNow = this.now();
+    const postSleepBh = checkBusinessHours(new Date(postSleepNow), this.deps.config);
+    if (!postSleepBh.allowed) {
+      this.pauseReason = postSleepBh.reason ?? 'OUTSIDE_HOURS';
+      this.nextAllowedSendAtMs = postSleepBh.nextWindowStart
+        ? postSleepBh.nextWindowStart.getTime()
+        : null;
+      this.emitStatus();
+      return false;
+    }
+
     const refreshedNext = this.deps.batchRepo.findNextPendingMessage();
     if (!refreshedNext) {
+      this.pauseReason = 'NONE';
       this.nextAllowedSendAtMs = null;
       return false;
     }
 
+    // 5. Verify WAHA session is WORKING
     let sessionReady = false;
     try {
       const session = await this.deps.wahaClient.getSession(this.deps.config.wahaSession);
@@ -154,6 +296,7 @@ export class BatchWorker {
     }
 
     if (!sessionReady) {
+      this.pauseReason = 'SESSION_NOT_READY';
       this.emitStatus();
       await this.sleep(Math.max(this.deps.config.workerPollIntervalMs, 5000), abortSignal);
       return false;
@@ -164,6 +307,8 @@ export class BatchWorker {
       return false;
     }
 
+    this.pauseReason = 'NONE';
+    this.nextAllowedSendAtMs = null;
     await this.dispatchClaimedMessage(claimed);
     return true;
   }
@@ -187,18 +332,22 @@ export class BatchWorker {
       );
       const updated = this.deps.batchRepo.markMessageSent(claimed.id, result.id);
       this.lastSentAtMs = this.now();
-      this.scheduleNextJitter();
+      this.scheduleAfterSend(true);
       this.deps.eventBus.emit('outbound.updated', updated);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Error desconocido enviando mensaje.';
       this.lastError = errMsg;
       const updated = this.deps.batchRepo.markMessageError(claimed.id, errMsg);
       this.lastSentAtMs = this.now();
-      this.scheduleNextJitter();
+      this.scheduleAfterSend(false);
       this.deps.eventBus.emit('outbound.updated', updated);
     } finally {
       this.busy = false;
       this.currentMessageId = null;
+      if (!this.deps.batchRepo.findNextPendingMessage()) {
+        this.pauseReason = 'NONE';
+        this.nextAllowedSendAtMs = null;
+      }
       const batchAfter = this.deps.batchRepo.refreshBatchStatus(claimed.batch_id);
       if (batchAfter) {
         this.deps.eventBus.emit('batch.updated', batchAfter);
@@ -207,12 +356,35 @@ export class BatchWorker {
     }
   }
 
-  private scheduleNextJitter(): void {
-    const delayMs = this.randomInt(
+  private scheduleAfterSend(succeeded: boolean): void {
+    const nowMs = this.now();
+    const jitterMs = this.randomInt(
       this.deps.config.workerMinDelayMs,
       this.deps.config.workerMaxDelayMs
     );
-    this.nextAllowedSendAtMs = this.now() + delayMs;
+    this.nextJitterSendAtMs = nowMs + jitterMs;
+
+    if (succeeded) {
+      const nextCount = this.getConsecutiveChunkCount() + 1;
+      if (
+        nextCount >= this.deps.config.workerChunkSize &&
+        this.deps.config.workerChunkPauseMaxMs > 0
+      ) {
+        const pauseMs = this.randomInt(
+          this.deps.config.workerChunkPauseMinMs,
+          this.deps.config.workerChunkPauseMaxMs
+        );
+        const resumeAtIso = new Date(nowMs + pauseMs).toISOString();
+        this.deps.batchRepo.setWorkerState(STATE_CHUNK_PAUSE_UNTIL, resumeAtIso);
+        this.deps.batchRepo.setWorkerState(STATE_CONSECUTIVE_SENT, String(nextCount));
+        this.nextAllowedSendAtMs = nowMs + pauseMs;
+        this.pauseReason = 'CHUNK_PAUSE';
+        return;
+      }
+      this.deps.batchRepo.setWorkerState(STATE_CONSECUTIVE_SENT, String(nextCount));
+    }
+
+    this.nextAllowedSendAtMs = this.nextJitterSendAtMs;
   }
 
   private async runLoop(signal: AbortSignal): Promise<void> {

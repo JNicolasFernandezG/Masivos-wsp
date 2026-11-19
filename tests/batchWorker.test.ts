@@ -6,13 +6,23 @@ import { EventBus } from '../src/services/eventBus.js';
 import type { WahaClient } from '../src/services/wahaClient.js';
 import { BatchWorker } from '../src/worker/batchWorker.js';
 
-function makeConfig() {
+function makeConfig(overrides: Record<string, string> = {}) {
   return loadConfig({
     NODE_ENV: 'test',
     DATABASE_PATH: ':memory:',
+    TZ: 'America/Argentina/Buenos_Aires',
     WORKER_MIN_DELAY_MS: '20000',
     WORKER_MAX_DELAY_MS: '60000',
     WORKER_POLL_INTERVAL_MS: '500',
+    WORKER_CHUNK_SIZE: '25',
+    WORKER_CHUNK_PAUSE_MIN_MS: '2700000',
+    WORKER_CHUNK_PAUSE_MAX_MS: '3600000',
+    WORKER_DAILY_LIMIT: '125',
+    BUSINESS_HOURS_ENABLED: 'true',
+    BUSINESS_HOURS_START: '09:00',
+    BUSINESS_HOURS_END: '19:00',
+    BUSINESS_ALLOWED_DAYS: '1,2,3,4,5,6',
+    ...overrides,
   });
 }
 
@@ -33,7 +43,7 @@ function makeMockWaha(overrides: Partial<WahaClient> = {}): WahaClient {
 }
 
 describe('BatchWorker', () => {
-  it('procesa mensajes de a uno respetando el jitter entre envíos y actualiza el estado del lote', async () => {
+  it('procesa mensajes de a uno respetando el jitter dentro de horario comercial', async () => {
     const db = createDatabase(':memory:');
     const batchRepo = new BatchRepository(db);
     const eventBus = new EventBus();
@@ -46,7 +56,8 @@ describe('BatchWorker', () => {
 
     const wahaClient = makeMockWaha({ sendText });
 
-    let fakeNow = 1_700_000_000_000;
+    // Jueves 2026-11-19 10:00 ART (13:00 UTC)
+    let fakeNow = Date.parse('2026-11-19T13:00:00.000Z');
     const sleepCalls: number[] = [];
 
     const worker = new BatchWorker({
@@ -55,6 +66,7 @@ describe('BatchWorker', () => {
       eventBus,
       config,
       nowFn: () => fakeNow,
+      maxSleepSliceMs: Number.POSITIVE_INFINITY,
       randomIntFn: (min, max) => {
         expect(min).toBe(20000);
         expect(max).toBe(60000);
@@ -72,14 +84,16 @@ describe('BatchWorker', () => {
       template: 'Hola {{nombre}}',
       items: [
         {
-          recipientRaw: '5491111111111',
+          chunkIndex: 1,
+          recipientRaw: '01111111111',
           phoneNormalized: '5491111111111',
           chatId: '5491111111111@c.us',
           variables: { nombre: 'Ana' },
           renderedText: 'Hola Ana',
         },
         {
-          recipientRaw: '5491122222222',
+          chunkIndex: 1,
+          recipientRaw: '01122222222',
           phoneNormalized: '5491122222222',
           chatId: '5491122222222@c.us',
           variables: { nombre: 'Carlos' },
@@ -91,12 +105,12 @@ describe('BatchWorker', () => {
     const first = await worker.processSingleTick();
     expect(first).toBe(true);
     expect(sendText).toHaveBeenCalledTimes(1);
-    expect(sleepCalls).toEqual([]); // Primer mensaje sale sin espera previa
+    expect(sleepCalls).toEqual([]);
 
     const second = await worker.processSingleTick();
     expect(second).toBe(true);
     expect(sendText).toHaveBeenCalledTimes(2);
-    expect(sleepCalls).toEqual([35000]); // Jitter aplicado antes del segundo envío
+    expect(sleepCalls).toEqual([35000]);
 
     const updatedBatch = batchRepo.getBatchById(batch.id);
     const messages = batchRepo.getBatchMessages(batch.id);
@@ -110,6 +124,119 @@ describe('BatchWorker', () => {
 
     const idle = await worker.processSingleTick();
     expect(idle).toBe(false);
+    db.close();
+  });
+
+  it('prohíbe enviar fuera del horario comercial (ej. 19:05 ART)', async () => {
+    const db = createDatabase(':memory:');
+    const batchRepo = new BatchRepository(db);
+    const eventBus = new EventBus();
+    const config = makeConfig();
+    const sendText = vi.fn();
+    const wahaClient = makeMockWaha({ sendText });
+
+    // Jueves 2026-11-19 19:05 ART = 22:05 UTC
+    const fakeNow = Date.parse('2026-11-19T22:05:00.000Z');
+    const worker = new BatchWorker({
+      batchRepo,
+      wahaClient,
+      eventBus,
+      config,
+      nowFn: () => fakeNow,
+      sleepFn: async () => undefined,
+    });
+
+    batchRepo.createBatch({
+      name: 'Nocturno',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01111111111',
+          phoneNormalized: '5491111111111',
+          chatId: '5491111111111@c.us',
+          variables: {},
+          renderedText: 'Prueba',
+        },
+      ],
+    });
+
+    const processed = await worker.processSingleTick();
+    expect(processed).toBe(false);
+    expect(sendText).not.toHaveBeenCalled();
+    expect(worker.getStatus().pauseReason).toBe('OUTSIDE_HOURS');
+    expect(worker.getStatus().nextSendAt).toBe('2026-11-20T12:00:00.000Z');
+    db.close();
+  });
+
+  it('pausa entre tandas (persiste en SQLite) y respeta el máximo diario', async () => {
+    const db = createDatabase(':memory:');
+    const batchRepo = new BatchRepository(db);
+    const eventBus = new EventBus();
+    const config = makeConfig({
+      WORKER_CHUNK_SIZE: '2',
+      WORKER_CHUNK_PAUSE_MIN_MS: '3000000',
+      WORKER_CHUNK_PAUSE_MAX_MS: '3600000',
+      WORKER_DAILY_LIMIT: '3',
+    });
+
+    const sendText = vi.fn().mockResolvedValue({ id: 'wamid-ok', raw: {} });
+    const wahaClient = makeMockWaha({ sendText });
+
+    // 10:00 ART
+    let fakeNow = Date.parse('2026-11-19T13:00:00.000Z');
+
+    const createWorker = () =>
+      new BatchWorker({
+        batchRepo,
+        wahaClient,
+        eventBus,
+        config,
+        nowFn: () => fakeNow,
+        maxSleepSliceMs: Number.POSITIVE_INFINITY,
+        randomIntFn: (min, max) => max, // 60s jitter, 60m chunk pause
+        sleepFn: async (ms) => {
+          fakeNow += ms;
+        },
+      });
+
+    let worker = createWorker();
+
+    batchRepo.createBatch({
+      name: 'Lote grande',
+      source: 'api',
+      template: null,
+      items: [1, 2, 3, 4].map((n) => ({
+        chunkIndex: n <= 2 ? 1 : 2,
+        recipientRaw: `0114404554${n}`,
+        phoneNormalized: `549114404554${n}`,
+        chatId: `549114404554${n}@c.us`,
+        variables: {},
+        renderedText: `Mensaje ${n}`,
+      })),
+    });
+
+    // Tanda 1: mensajes 1 y 2
+    expect(await worker.processSingleTick()).toBe(true);
+    expect(await worker.processSingleTick()).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(2);
+
+    // Simulamos reinicio creando otra instancia de BatchWorker con el mismo DB
+    worker = createWorker();
+    const beforePauseEnd = fakeNow;
+    expect(await worker.processSingleTick()).toBe(false);
+    expect(worker.getStatus().pauseReason).toBe('CHUNK_PAUSE');
+    expect(fakeNow - beforePauseEnd).toBe(3600000); // Esperó los 60 min
+
+    // Ya cumplida la pausa entre tandas, envía el mensaje 3 (tope diario = 3)
+    expect(await worker.processSingleTick()).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(3);
+
+    // El mensaje 4 queda bloqueado por tope diario (3/3)
+    expect(await worker.processSingleTick()).toBe(false);
+    expect(worker.getStatus().pauseReason).toBe('DAILY_LIMIT_REACHED');
+    expect(sendText).toHaveBeenCalledTimes(3);
     db.close();
   });
 
@@ -129,6 +256,7 @@ describe('BatchWorker', () => {
       wahaClient,
       eventBus,
       config,
+      nowFn: () => Date.parse('2026-11-19T14:00:00.000Z'),
       sleepFn: async () => undefined,
     });
 
@@ -138,7 +266,8 @@ describe('BatchWorker', () => {
       template: null,
       items: [
         {
-          recipientRaw: '5491111111111',
+          chunkIndex: 1,
+          recipientRaw: '01111111111',
           phoneNormalized: '5491111111111',
           chatId: '5491111111111@c.us',
           variables: {},
@@ -164,7 +293,8 @@ describe('BatchWorker', () => {
       template: null,
       items: [
         {
-          recipientRaw: '5491111111111',
+          chunkIndex: 1,
+          recipientRaw: '01111111111',
           phoneNormalized: '5491111111111',
           chatId: '5491111111111@c.us',
           variables: {},

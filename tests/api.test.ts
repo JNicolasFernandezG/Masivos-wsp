@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import ExcelJS from 'exceljs';
 import { describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
@@ -29,8 +30,9 @@ describe('HTTP API integration', () => {
       DATABASE_PATH: ':memory:',
       WAHA_WEBHOOK_HMAC_KEY: hmacSecret,
       ADMIN_API_TOKEN: adminToken,
+      WORKER_CHUNK_SIZE: '25',
       WORKER_SUGGESTED_BATCH_SIZE: '25',
-      WORKER_MAX_BATCH_SIZE: '30',
+      WORKER_MAX_BATCH_SIZE: '1000',
       WORKER_ENABLED: 'false',
     });
 
@@ -38,39 +40,44 @@ describe('HTTP API integration', () => {
     const wahaClient = createMockWaha();
     const { app } = buildApp({ config, db, wahaClient, logger: false });
 
-    // Health es público
     const healthRes = await app.inject({ method: 'GET', url: '/api/health' });
     expect(healthRes.statusCode).toBe(200);
     expect(healthRes.json().ok).toBe(true);
     expect(healthRes.json().config.authRequired).toBe(true);
+    expect(healthRes.json().config.defaultMessageTemplate).toContain('Asistodo');
 
-    // Sin ADMIN_API_TOKEN debe devolver 401
     const unauthRes = await app.inject({ method: 'GET', url: '/api/batches' });
     expect(unauthRes.statusCode).toBe(401);
 
-    // Crear lote con formato API REST
+    // Crear lote usando plantilla por defecto de Asistodo (sin enviar template explícito)
+    // Incluye un teléfono duplicado que debe omitirse automáticamente
     const createRes = await app.inject({
       method: 'POST',
       url: '/api/batches',
       headers: { 'x-admin-token': adminToken },
       payload: {
-        name: 'Cobranzas Noviembre',
-        template: 'Hola {{nombre}}, tu gestión {{nro}} por {{monto}} está disponible.',
-        messages: [
-          {
-            to: '5491112345678',
-            variables: { nombre: 'Ana', nro: 'G-1', monto: '$10.000' },
-          },
-          {
-            to: '5491187654321',
-            variables: { nombre: 'Pedro', nro: 'G-2', monto: '$15.000' },
-          },
+        name: 'Deudas Asistodo',
+        rows: [
+          { TELEFONO: 'tel:01144045549', NOMBRE: 'Ana Pérez', OBSERVACION: 'Aviso 1' },
+          { TELEFONO: 'tel:0239615545631', NOMBRE: 'Carlos Gómez', OBSERVACION: '' },
+          { TELEFONO: '0239615545631', NOMBRE: 'Carlos Gómez', OBSERVACION: 'Duplicado' },
         ],
       },
     });
     expect(createRes.statusCode).toBe(201);
     const createdBody = createRes.json();
     expect(createdBody.batch.total_count).toBe(2);
+    expect(createdBody.skippedDuplicateCount).toBe(1);
+
+    const detailRes = await app.inject({
+      method: 'GET',
+      url: `/api/batches/${createdBody.batch.id}`,
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(detailRes.json().messages[0].chat_id).toBe('5491144045549@c.us');
+    expect(detailRes.json().messages[0].rendered_text).toBe(
+      'Usted, Ana Pérez registra deuda con Asistodo, regularice enviando un mensaje de whatsapp al 1176560109'
+    );
 
     // Webhook HMAC inválido -> 401
     const badWebhook = await app.inject({
@@ -92,11 +99,11 @@ describe('HTTP API integration', () => {
       payload: {
         id: 'msg-in-55',
         timestamp: 1763481000,
-        from: '5491112345678@s.whatsapp.net',
-        chatId: '5491112345678@s.whatsapp.net',
-        body: 'Gracias, ya transferí',
+        from: '5491144045549@s.whatsapp.net',
+        chatId: '5491144045549@s.whatsapp.net',
+        body: 'Gracias, ya regularizo',
         fromMe: false,
-        _data: { notifyName: 'Ana' },
+        _data: { notifyName: 'Ana Pérez' },
       },
     });
     const validHmac = crypto
@@ -117,20 +124,19 @@ describe('HTTP API integration', () => {
     expect(okWebhook.statusCode).toBe(200);
     expect(okWebhook.json().inserted).toBe(true);
 
-    // Responder desde el panel/API
     const replyRes = await app.inject({
       method: 'POST',
       url: '/api/messages/reply',
       headers: { 'x-admin-token': adminToken },
       payload: {
-        chatId: '5491112345678@s.whatsapp.net',
+        chatId: '5491144045549@s.whatsapp.net',
         text: 'Recibido Ana, ¡muchas gracias!',
       },
     });
     expect(replyRes.statusCode).toBe(200);
     expect(wahaClient.sendText).toHaveBeenCalledWith(
       'default',
-      '5491112345678@c.us',
+      '5491144045549@c.us',
       'Recibido Ana, ¡muchas gracias!'
     );
 
@@ -140,7 +146,7 @@ describe('HTTP API integration', () => {
       headers: { 'x-admin-token': adminToken },
     });
     expect(convRes.statusCode).toBe(200);
-    expect(convRes.json().conversations[0].chat_id).toBe('5491112345678@c.us');
+    expect(convRes.json().conversations[0].chat_id).toBe('5491144045549@c.us');
     expect(convRes.json().conversations[0].message_count).toBe(2);
 
     // Pausar, reanudar y cancelar lote
@@ -169,38 +175,88 @@ describe('HTTP API integration', () => {
     expect(cancelRes.json().batch.status).toBe('CANCELADO');
     expect(cancelRes.json().batch.cancelled_count).toBe(2);
 
-    // Descarga de plantilla CSV y carga multipart + UI estática
-    const sampleRes = await app.inject({
+    // Plantilla CSV eliminada (cae en :id como inválido) y plantilla XLSX solo con encabezados vacíos
+    const sampleCsvRes = await app.inject({
       method: 'GET',
       url: '/api/batches/sample.csv',
       headers: { 'x-admin-token': adminToken },
     });
-    expect(sampleRes.statusCode).toBe(200);
-    expect(sampleRes.body).toContain('telefono;nombre;nro_gestion');
+    expect(sampleCsvRes.statusCode).toBe(400);
 
-    const boundary = '----masivosTestBoundary';
-    const csvPayload =
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="test.csv"\r\n` +
-      `Content-Type: text/csv\r\n\r\n` +
-      `telefono;nombre\r\n5491133445566;Lucia\r\n` +
-      `--${boundary}--\r\n`;
-
-    const parseRes = await app.inject({
-      method: 'POST',
-      url: '/api/batches/parse-file',
-      headers: {
-        'x-admin-token': adminToken,
-        'content-type': `multipart/form-data; boundary=${boundary}`,
-      },
-      payload: csvPayload,
+    const sampleXlsxRes = await app.inject({
+      method: 'GET',
+      url: '/api/batches/sample.xlsx',
+      headers: { 'x-admin-token': adminToken },
     });
-    expect(parseRes.statusCode).toBe(200);
-    expect(parseRes.json().rows).toEqual([{ telefono: '5491133445566', nombre: 'Lucia' }]);
+    expect(sampleXlsxRes.statusCode).toBe(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(sampleXlsxRes.rawPayload as unknown as ArrayBuffer);
+    const sheet = wb.worksheets[0];
+    expect(sheet.rowCount).toBe(1);
+    expect([
+      sheet.getRow(1).getCell(1).value,
+      sheet.getRow(1).getCell(2).value,
+      sheet.getRow(1).getCell(3).value,
+    ]).toEqual(['telefono', 'nombre', 'observacion']);
 
     const indexRes = await app.inject({ method: 'GET', url: '/' });
     expect(indexRes.statusCode).toBe(200);
     expect(indexRes.body).toContain('Masivos-wsp');
+    expect(indexRes.body).not.toContain('sample.csv');
+
+    await app.close();
+    db.close();
+  });
+
+  it('exige NOMBRE cuando se usa la plantilla por defecto y subdivide archivos grandes en tandas', async () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      WORKER_CHUNK_SIZE: '25',
+      WORKER_MAX_BATCH_SIZE: '100',
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    const missingNameRes = await app.inject({
+      method: 'POST',
+      url: '/api/batches',
+      payload: {
+        name: 'Sin nombre',
+        rows: [{ telefono: '01144045549', observacion: 'falta nombre' }],
+      },
+    });
+    expect(missingNameRes.statusCode).toBe(400);
+    expect(missingNameRes.json().preview.items[0].error).toContain('NOMBRE');
+
+    const rows60 = Array.from({ length: 60 }, (_, idx) => ({
+      telefono: `0114404${String(1000 + idx)}`,
+      nombre: `Cliente ${idx + 1}`,
+      observacion: `Obs ${idx + 1}`,
+    }));
+    const largeRes = await app.inject({
+      method: 'POST',
+      url: '/api/batches',
+      payload: { name: 'Lote 60 en tandas', rows: rows60 },
+    });
+    expect(largeRes.statusCode).toBe(201);
+    expect(largeRes.json().chunkCount).toBe(3);
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/batches/${largeRes.json().batch.id}`,
+    });
+    const msgs = detail.json().messages;
+    expect(msgs[0].chunk_index).toBe(1);
+    expect(msgs[24].chunk_index).toBe(1);
+    expect(msgs[25].chunk_index).toBe(2);
+    expect(msgs[50].chunk_index).toBe(3);
 
     await app.close();
     db.close();
@@ -228,9 +284,9 @@ describe('HTTP API integration', () => {
       payload: {
         name: 'Excedido',
         messages: [
-          { to: '5491111111111', text: 'Uno' },
-          { to: '5491122222222', text: 'Dos' },
-          { to: '5491133333333', text: 'Tres' },
+          { to: '01144045549', text: 'Uno' },
+          { to: '01139563183', text: 'Dos' },
+          { to: '01151443664', text: 'Tres' },
         ],
       },
     });

@@ -5,6 +5,16 @@ import { SCHEMA_SQL } from './schema.js';
 
 export type SqliteDb = DatabaseSync;
 
+function runMigrations(db: DatabaseSync): void {
+  const columns = db
+    .prepare('PRAGMA table_info(outbound_messages)')
+    .all() as Array<{ name?: string }>;
+  const hasChunkIndex = columns.some((c) => c.name === 'chunk_index');
+  if (!hasChunkIndex) {
+    db.exec('ALTER TABLE outbound_messages ADD COLUMN chunk_index INTEGER NOT NULL DEFAULT 1;');
+  }
+}
+
 export function createDatabase(databasePath: string): DatabaseSync {
   if (databasePath !== ':memory:') {
     const dir = path.dirname(path.resolve(databasePath));
@@ -18,6 +28,7 @@ export function createDatabase(databasePath: string): DatabaseSync {
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA_SQL);
+  runMigrations(db);
   return db;
 }
 

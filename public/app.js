@@ -133,8 +133,11 @@ async function refreshHealthAndWaha() {
       state.authRequired = true;
       $('btn-auth-modal').classList.remove('hidden');
     }
-    if (health.config?.defaultCountryCode && !$('country-code').value) {
+    if (health.config?.defaultCountryCode !== undefined) {
       $('country-code').value = health.config.defaultCountryCode;
+    }
+    if (health.config?.defaultMessageTemplate && !$('template-input').value.trim()) {
+      $('template-input').value = health.config.defaultMessageTemplate;
     }
     updateWorkerPill(health.worker);
   } catch (err) {
@@ -153,6 +156,16 @@ function updateWorkerPill(worker) {
   state.workerStatus = worker;
   const pill = $('pill-worker');
   const txt = $('worker-status-text');
+  const dailyPill = $('pill-daily');
+  const dailyTxt = $('daily-status-text');
+
+  if (dailyTxt) {
+    const sent = worker.sentToday ?? 0;
+    const limit = worker.dailyLimit ?? 125;
+    const win = worker.businessHoursWindow ? ` · ${worker.businessHoursWindow}` : '';
+    dailyTxt.textContent = `${sent}/${limit}${win}`;
+    dailyPill.className = sent >= limit ? 'pill warn' : 'pill ok';
+  }
 
   if (!worker.enabled) {
     pill.className = 'pill warn';
@@ -164,16 +177,36 @@ function updateWorkerPill(worker) {
     txt.textContent = `Enviando #${worker.currentMessageId}`;
     return;
   }
-  if (worker.nextSendAt) {
-    const remainingSec = Math.max(
-      0,
-      Math.ceil((new Date(worker.nextSendAt).getTime() - Date.now()) / 1000)
-    );
-    if (remainingSec > 0) {
-      pill.className = 'pill ok';
-      txt.textContent = `Pausa anti-baneo: ${remainingSec}s`;
-      return;
-    }
+
+  const remainingSec = worker.nextSendAt
+    ? Math.max(0, Math.ceil((new Date(worker.nextSendAt).getTime() - Date.now()) / 1000))
+    : 0;
+
+  if (worker.pauseReason === 'OUTSIDE_HOURS' || worker.pauseReason === 'NON_BUSINESS_DAY') {
+    pill.className = 'pill warn';
+    const nextStr = worker.nextSendAt ? formatDateTime(worker.nextSendAt) : 'próximo horario';
+    txt.textContent = `Fuera de horario (retoma ${nextStr})`;
+    return;
+  }
+  if (worker.pauseReason === 'DAILY_LIMIT_REACHED') {
+    pill.className = 'pill warn';
+    txt.textContent = `Tope diario (${worker.sentToday}/${worker.dailyLimit})`;
+    return;
+  }
+  if (worker.pauseReason === 'CHUNK_PAUSE' && remainingSec > 0) {
+    pill.className = 'pill warn';
+    txt.textContent = `Pausa entre tandas: ${formatSeconds(remainingSec)}`;
+    return;
+  }
+  if (worker.pauseReason === 'SESSION_NOT_READY') {
+    pill.className = 'pill warn';
+    txt.textContent = `Esperando sesión (${worker.sessionStatus})`;
+    return;
+  }
+  if (remainingSec > 0) {
+    pill.className = 'pill ok';
+    txt.textContent = `Pausa anti-baneo: ${remainingSec}s`;
+    return;
   }
   pill.className = worker.running ? 'pill ok' : 'pill warn';
   txt.textContent = worker.running ? 'Activo (en espera)' : 'Detenido';
@@ -433,6 +466,7 @@ $('btn-preview-batch').addEventListener('click', async () => {
         phoneColumn: $('phone-column').value,
         textColumn: $('text-column').value || undefined,
         defaultCountryCode: $('country-code').value.trim(),
+        deduplicate: $('deduplicate-check').checked,
         rows: state.parsedRows,
       }),
     });
@@ -452,23 +486,38 @@ function renderPreview(preview) {
   }
 
   const dur = preview.estimatedDurationSeconds;
+  const daysText = preview.estimatedDays > 1 ? ` · Días estimados: ~${preview.estimatedDays}` : '';
   $('preview-summary').textContent =
-    `Válidos: ${preview.validCount} · Inválidos: ${preview.invalidCount} · Duración estimada (jitter 20–60s): ${formatSeconds(dur.min)} a ${formatSeconds(dur.max)}`;
+    `Válidos: ${preview.validCount} (${preview.chunkCount} tanda/s de hasta ${preview.chunkSize}) · Duplicados omitidos: ${preview.duplicateCount} · Inválidos: ${preview.invalidCount} · Duración envío activo: ${formatSeconds(dur.min)} a ${formatSeconds(dur.max)}${daysText}`;
 
   const table = $('preview-table');
   const tbody = table.querySelector('tbody');
   tbody.replaceChildren();
 
   for (const item of preview.items) {
+    const statusClass = item.valid
+      ? item.warning
+        ? 'status-PAUSADO'
+        : 'status-ENVIADO'
+      : item.duplicate
+        ? 'status-CANCELADO'
+        : 'status-ERROR';
+    const statusText = item.valid
+      ? item.warning || 'Válido'
+      : item.duplicate
+        ? 'Duplicado (omitido)'
+        : item.error || 'Error';
+
     const tr = el('tr', {}, [
       el('td', { textContent: String(item.rowIndex) }),
+      el('td', { textContent: item.chunkIndex ? `Tanda ${item.chunkIndex}` : '-' }),
       el('td', { textContent: item.recipientRaw || '-' }),
       el('td', {}, [el('code', { textContent: item.chatId || '-' })]),
       el('td', { textContent: item.renderedText || '-' }),
       el('td', {}, [
         el('span', {
-          className: `status-tag ${item.valid ? 'status-ENVIADO' : 'status-ERROR'}`,
-          textContent: item.valid ? 'Válido' : item.error || 'Error',
+          className: `status-tag ${statusClass}`,
+          textContent: statusText,
         }),
       ]),
     ]);
@@ -487,6 +536,12 @@ $('skip-invalid-check').addEventListener('change', () => {
   }
 });
 
+$('deduplicate-check').addEventListener('change', () => {
+  if (state.parsedRows.length > 0 && state.lastPreview) {
+    $('btn-preview-batch').click();
+  }
+});
+
 $('btn-submit-batch').addEventListener('click', async () => {
   const name = $('batch-name').value.trim() || `Lote ${new Date().toLocaleString('es-AR')}`;
   try {
@@ -501,6 +556,7 @@ $('btn-submit-batch').addEventListener('click', async () => {
         textColumn: $('text-column').value || undefined,
         defaultCountryCode: $('country-code').value.trim(),
         skipInvalid: $('skip-invalid-check').checked,
+        deduplicate: $('deduplicate-check').checked,
         rows: state.parsedRows,
       }),
     });
@@ -624,6 +680,7 @@ async function loadBatchDetail(batchId) {
       tbody.appendChild(
         el('tr', {}, [
           el('td', { textContent: String(m.id) }),
+          el('td', { textContent: `T${m.chunk_index || 1}` }),
           el('td', {}, [el('code', { textContent: m.chat_id })]),
           el('td', { textContent: m.rendered_text }),
           el('td', {}, [
@@ -641,6 +698,7 @@ async function loadBatchDetail(batchId) {
       el('thead', {}, [
         el('tr', {}, [
           el('th', { textContent: 'ID' }),
+          el('th', { textContent: 'Tanda' }),
           el('th', { textContent: 'chatId' }),
           el('th', { textContent: 'Mensaje' }),
           el('th', { textContent: 'Estado' }),

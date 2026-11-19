@@ -37,6 +37,7 @@ export interface BatchWithStats extends BatchRecord {
 export interface OutboundMessageRecord {
   id: number;
   batch_id: number;
+  chunk_index: number;
   recipient_raw: string;
   phone_normalized: string | null;
   chat_id: string;
@@ -52,6 +53,7 @@ export interface OutboundMessageRecord {
 }
 
 export interface NewOutboundItem {
+  chunkIndex?: number;
   recipientRaw: string;
   phoneNormalized: string | null;
   chatId: string;
@@ -89,14 +91,15 @@ export class BatchRepository {
 
       const insertItem = this.db.prepare(
         `INSERT INTO outbound_messages (
-          batch_id, recipient_raw, phone_normalized, chat_id, variables_json,
+          batch_id, chunk_index, recipient_raw, phone_normalized, chat_id, variables_json,
           rendered_text, status, attempts, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'PENDIENTE', 0, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', 0, ?, ?)`
       );
 
       for (const item of input.items) {
         insertItem.run(
           batchId,
+          item.chunkIndex ?? 1,
           item.recipientRaw,
           item.phoneNormalized,
           item.chatId,
@@ -169,6 +172,64 @@ export class BatchRepository {
       )
       .all(batchId) as Record<string, unknown>[];
     return toPlainRows(rows) as unknown as OutboundMessageRecord[];
+  }
+
+  countSentSince(sinceIso: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS cnt
+         FROM outbound_messages
+         WHERE status = 'ENVIADO' AND sent_at IS NOT NULL AND sent_at >= ?`
+      )
+      .get(sinceIso) as { cnt?: number } | undefined;
+    return Number(row?.cnt ?? 0);
+  }
+
+  getLastSentMessage(): {
+    id: number;
+    batch_id: number;
+    chunk_index: number;
+    sent_at: string;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, batch_id, chunk_index, sent_at
+         FROM outbound_messages
+         WHERE status = 'ENVIADO' AND sent_at IS NOT NULL
+         ORDER BY sent_at DESC, id DESC
+         LIMIT 1`
+      )
+      .get() as Record<string, unknown> | undefined;
+    return row
+      ? (toPlainRow(row) as unknown as {
+          id: number;
+          batch_id: number;
+          chunk_index: number;
+          sent_at: string;
+        })
+      : null;
+  }
+
+  getWorkerState(key: string): string | null {
+    const row = this.db
+      .prepare('SELECT value FROM worker_state WHERE key = ?')
+      .get(key) as { value?: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setWorkerState(key: string, value: string | null): void {
+    if (value === null) {
+      this.db.prepare('DELETE FROM worker_state WHERE key = ?').run(key);
+      return;
+    }
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO worker_state (key, value, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      )
+      .run(key, value, now);
   }
 
   recoverStuckProcessing(): number {

@@ -9,7 +9,11 @@ async function main() {
   const config = loadConfig();
   const db = createDatabase(config.databasePath);
   const batchRepo = new BatchRepository(db);
-  const wahaClient = new HttpWahaClient(config.wahaBaseUrl, config.wahaApiKey);
+  const wahaClient = new HttpWahaClient(
+    config.wahaBaseUrl,
+    config.wahaApiKey,
+    config.wahaTimeoutMs
+  );
   const eventBus = new EventBus();
 
   const worker = new BatchWorker({

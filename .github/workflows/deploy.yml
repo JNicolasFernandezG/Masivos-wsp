@@ -1,0 +1,48 @@
+name: CD - Deploy a Linux
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-self-hosted:
+    name: Deploy en servidor Linux (Self-Hosted Runner en red local)
+    runs-on: [self-hosted, linux]
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') &&
+      vars.DEPLOY_MODE == 'self-hosted'
+
+    steps:
+      - name: Ejecutar script de despliegue local
+        working-directory: ${{ vars.DEPLOY_PATH || '/opt/masivos-wsp' }}
+        run: bash deploy/deploy.sh
+
+  deploy-ssh:
+    name: Deploy vía SSH (VPS / servidor accesible)
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') &&
+      vars.DEPLOY_MODE == 'ssh'
+
+    steps:
+      - name: Instalar clave SSH y desplegar
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/masivos-wsp' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd '$DEPLOY_PATH' && bash deploy/deploy.sh"

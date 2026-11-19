@@ -1,3 +1,4 @@
+import ExcelJS from 'exceljs';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { AppConfig } from '../config.js';
@@ -19,6 +20,7 @@ const previewSchema = z.object({
   phoneColumn: z.string().optional(),
   textColumn: z.string().optional(),
   defaultCountryCode: z.string().optional(),
+  deduplicate: z.boolean().optional().default(true),
   rows: z.array(z.record(z.unknown())).min(1, 'Debes incluir al menos un destinatario.'),
 });
 
@@ -37,6 +39,7 @@ const createBatchSchema = z
     textColumn: z.string().optional(),
     defaultCountryCode: z.string().optional(),
     skipInvalid: z.boolean().optional().default(false),
+    deduplicate: z.boolean().optional().default(true),
     rows: z.array(z.record(z.unknown())).optional(),
     messages: z.array(apiMessageItemSchema).optional(),
   })
@@ -71,19 +74,31 @@ function flattenInputRows(input: z.infer<typeof createBatchSchema>): {
   };
 }
 
+export async function buildSampleWorkbookBuffer(): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Destinatarios');
+
+  ws.columns = [
+    { header: 'telefono', key: 'telefono', width: 20, style: { numFmt: '@' } },
+    { header: 'nombre', key: 'nombre', width: 24, style: { numFmt: '@' } },
+    { header: 'observacion', key: 'observacion', width: 32, style: { numFmt: '@' } },
+  ];
+  ws.getRow(1).font = { bold: true };
+
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
 export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
   return async (fastify) => {
-    fastify.get('/api/batches/sample.csv', async (_req, reply) => {
-      const sample = [
-        'telefono;nombre;nro_gestion;monto;fecha',
-        '5491112345678;Ana Pérez;G-1042;$ 45.000;25/11/2026',
-        '5491187654321;Carlos Gómez;G-1043;$ 62.500;26/11/2026',
-      ].join('\r\n');
-
+    fastify.get('/api/batches/sample.xlsx', async (_req, reply) => {
+      const buffer = await buildSampleWorkbookBuffer();
       return reply
-        .header('Content-Type', 'text/csv; charset=utf-8')
-        .header('Content-Disposition', 'attachment; filename="plantilla_lote_masivos.csv"')
-        .send(`\uFEFF${sample}\r\n`);
+        .header(
+          'Content-Type',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        .header('Content-Disposition', 'attachment; filename="plantilla_asistodo.xlsx"')
+        .send(buffer);
     });
 
     fastify.get('/api/batches', async () => {
@@ -140,6 +155,7 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
         textColumn: parsed.data.textColumn,
         template: parsed.data.template,
         defaultCountryCode: parsed.data.defaultCountryCode,
+        deduplicate: parsed.data.deduplicate,
         config: deps.config,
       });
 
@@ -161,6 +177,7 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
         textColumn: flattened.textColumn,
         template: parsed.data.template,
         defaultCountryCode: parsed.data.defaultCountryCode,
+        deduplicate: parsed.data.deduplicate,
         config: deps.config,
       });
 
@@ -180,7 +197,7 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
 
       if (preview.validCount > deps.config.workerMaxBatchSize) {
         return reply.status(400).send({
-          error: `El lote tiene ${preview.validCount} mensajes válidos y excede el máximo permitido (${deps.config.workerMaxBatchSize}). Divide el envío en lotes más pequeños (~${deps.config.workerSuggestedBatchSize}).`,
+          error: `El lote tiene ${preview.validCount} mensajes válidos y excede el máximo permitido (${deps.config.workerMaxBatchSize}).`,
           preview,
         });
       }
@@ -188,7 +205,7 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
       const batch = deps.batchRepo.createBatch({
         name: parsed.data.name,
         source: parsed.data.source,
-        template: parsed.data.template.trim() || null,
+        template: preview.effectiveTemplate,
         items: preview.validItems,
       });
 
@@ -196,8 +213,12 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
 
       return reply.status(201).send({
         batch,
+        chunkCount: preview.chunkCount,
+        chunkSize: preview.chunkSize,
+        estimatedDays: preview.estimatedDays,
         warnings: preview.warnings,
         skippedInvalidCount: preview.invalidCount,
+        skippedDuplicateCount: preview.duplicateCount,
         estimatedDurationSeconds: preview.estimatedDurationSeconds,
       });
     });

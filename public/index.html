@@ -25,6 +25,10 @@
           <span class="pill-label">Worker:</span>
           <strong id="worker-status-text">-</strong>
         </div>
+        <div class="pill" id="pill-daily">
+          <span class="pill-label">Cuota hoy:</span>
+          <strong id="daily-status-text">0/125</strong>
+        </div>
         <div class="pill" id="pill-sse">
           <span class="pill-label">Tiempo real:</span>
           <strong id="sse-status-text">Conectando...</strong>
@@ -37,7 +41,7 @@
 
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="batches" type="button">Cola y Lotes</button>
-      <button class="tab" data-tab="new-batch" type="button">Nuevo Lote (~25)</button>
+      <button class="tab" data-tab="new-batch" type="button">Nuevo Lote</button>
       <button class="tab" data-tab="inbox" type="button">
         Mensajes Entrantes <span class="badge hidden" id="inbox-badge">0</span>
       </button>
@@ -95,8 +99,8 @@
               <button type="button" class="btn btn-sm btn-secondary" id="btn-mode-manual">
                 Pegar lista manual
               </button>
-              <a class="btn btn-sm btn-ghost" href="/api/batches/sample.csv" download>
-                Descargar plantilla CSV
+              <a class="btn btn-sm btn-ghost" href="/api/batches/sample.xlsx" download>
+                Descargar plantilla XLSX
               </a>
             </div>
 
@@ -104,7 +108,7 @@
               <label for="file-input">Archivo .xlsx o .csv</label>
               <input id="file-input" type="file" accept=".xlsx,.csv,.txt" />
               <p class="hint" id="file-info">
-                La primera fila debe contener los nombres de columna (ej. telefono, nombre, monto).
+                Columnas esperadas: <code>telefono</code>, <code>nombre</code> y opcionalmente <code>observacion</code>.
               </p>
             </div>
 
@@ -113,7 +117,7 @@
               <textarea
                 id="manual-input"
                 rows="7"
-                placeholder="telefono;nombre;nro_gestion;monto;fecha&#10;5491112345678;Ana Pérez;G-1042;$ 45.000;25/11/2026&#10;5491187654321;Carlos Gómez;G-1043;$ 62.500;26/11/2026"
+                placeholder="telefono;nombre;observacion&#10;01144045549;Ana Pérez;Cuota vencida&#10;0239615545631;Carlos Gómez;Segundo aviso"
               ></textarea>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-parse-manual">
                 Cargar texto como tabla
@@ -129,10 +133,11 @@
                 <select id="phone-column"></select>
               </div>
               <div class="form-group">
-                <label for="country-code">Código país por defecto (opcional)</label>
+                <label for="country-code">Código país por defecto</label>
                 <input
                   id="country-code"
                   type="text"
+                  value="549"
                   placeholder="Ej: 549"
                 />
               </div>
@@ -151,10 +156,10 @@
               <textarea
                 id="template-input"
                 rows="4"
-                placeholder="Hola {{nombre}}, te recordamos la gestión {{nro_gestion}} por {{monto}} con vencimiento {{fecha}}."
+                placeholder="Usted, {{nombre}} registra deuda con Asistodo, regularice enviando un mensaje de whatsapp al 1176560109"
               ></textarea>
               <p class="hint">
-                Regla anti-baneo: personaliza cada mensaje con datos reales y mantén lotes pequeños (~25 envíos).
+                Si cargas un archivo grande (ej. 300 filas), el sistema envía tandas de 25 con pausas de hasta 60 min, tope de 125/día y solo en horario comercial.
               </p>
             </div>
 
@@ -172,10 +177,16 @@
         <div class="card mt-md" id="preview-card">
           <div class="card-header">
             <h2>3. Previsualización antes de enviar</h2>
-            <label class="checkbox-inline">
-              <input type="checkbox" id="skip-invalid-check" />
-              Omitir filas inválidas al encolar
-            </label>
+            <div class="row wrap gap-sm">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="deduplicate-check" checked />
+                Omitir teléfonos duplicados
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="skip-invalid-check" />
+                Omitir filas inválidas al encolar
+              </label>
+            </div>
           </div>
           <div id="preview-warnings" class="stack-xs"></div>
           <div id="preview-summary" class="muted">
@@ -186,6 +197,7 @@
               <thead>
                 <tr>
                   <th>#</th>
+                  <th>Tanda</th>
                   <th>Entrada</th>
                   <th>chatId normalizado</th>
                   <th>Mensaje renderizado</th>

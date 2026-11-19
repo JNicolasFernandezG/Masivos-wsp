@@ -44,7 +44,7 @@ export class HttpWahaClient implements WahaClient {
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey: string,
-    private readonly timeoutMs = 15000
+    private readonly timeoutMs = 60000
   ) {}
 
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -145,7 +145,18 @@ export class HttpWahaClient implements WahaClient {
         const created = await this.requestJson<Record<string, unknown>>(
           'POST',
           '/api/sessions',
-          { name: session, start: true }
+          {
+            name: session,
+            start: true,
+            config: {
+              ignore: {
+                status: true,
+                groups: false,
+                channels: true,
+                broadcast: true,
+              },
+            },
+          }
         );
         return this.parseSession(created ?? {}, session);
       }

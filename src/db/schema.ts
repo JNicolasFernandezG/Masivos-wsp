@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS batches (
 CREATE TABLE IF NOT EXISTS outbound_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+  chunk_index INTEGER NOT NULL DEFAULT 1,
   recipient_raw TEXT NOT NULL,
   phone_normalized TEXT,
   chat_id TEXT NOT NULL,
@@ -32,6 +33,15 @@ CREATE INDEX IF NOT EXISTS idx_outbound_status_id
 
 CREATE INDEX IF NOT EXISTS idx_outbound_batch_status
   ON outbound_messages (batch_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_outbound_sent_at
+  ON outbound_messages (status, sent_at);
+
+CREATE TABLE IF NOT EXISTS worker_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -6,7 +6,11 @@ import { HttpWahaClient } from './services/wahaClient.js';
 async function main() {
   const config = loadConfig();
   const db = createDatabase(config.databasePath);
-  const wahaClient = new HttpWahaClient(config.wahaBaseUrl, config.wahaApiKey);
+  const wahaClient = new HttpWahaClient(
+    config.wahaBaseUrl,
+    config.wahaApiKey,
+    config.wahaTimeoutMs
+  );
 
   const { app, worker } = buildApp({
     config,
