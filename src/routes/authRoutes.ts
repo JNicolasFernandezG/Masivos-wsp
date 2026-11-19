@@ -5,8 +5,15 @@ import type { AppConfig } from '../config.js';
 
 export const SESSION_COOKIE_NAME = 'masivos_session';
 const SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 horas
-const MAX_LOGIN_ATTEMPTS = 10;
-const LOGIN_WINDOW_MS = 60 * 1000;
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+
+function isHttpsRequest(headers: Record<string, string | string[] | undefined>, protocol: string): boolean {
+  if (protocol === 'https') return true;
+  const xfp = headers['x-forwarded-proto'];
+  const val = Array.isArray(xfp) ? xfp[0] : xfp;
+  return typeof val === 'string' && val.split(',')[0].trim().toLowerCase() === 'https';
+}
 
 export function constantTimeEquals(expected: string, provided: string): boolean {
   const expectedHash = crypto.createHash('sha256').update(expected).digest();
@@ -131,11 +138,14 @@ export function createAuthRoutes(config: AppConfig): FastifyPluginAsync {
 
       const ip = req.ip || 'unknown';
       const now = Date.now();
+      for (const [k, v] of attemptsByIp) {
+        if (v.resetAt <= now) attemptsByIp.delete(k);
+      }
       const entry = attemptsByIp.get(ip);
       if (entry && entry.resetAt > now && entry.count >= MAX_LOGIN_ATTEMPTS) {
         return reply.status(429).send({
           ok: false,
-          error: 'Demasiados intentos fallidos. Espera 1 minuto e intenta nuevamente.',
+          error: 'Demasiados intentos fallidos. Espera unos minutos e intenta nuevamente.',
         });
       }
 
@@ -158,17 +168,19 @@ export function createAuthRoutes(config: AppConfig): FastifyPluginAsync {
 
       attemptsByIp.delete(ip);
       const cookieVal = createSessionCookieValue(config.adminApiToken, now);
+      const secureFlag = isHttpsRequest(req.headers, req.protocol) ? '; Secure' : '';
       reply.header(
         'Set-Cookie',
-        `${SESSION_COOKIE_NAME}=${encodeURIComponent(cookieVal)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}`
+        `${SESSION_COOKIE_NAME}=${encodeURIComponent(cookieVal)}; Path=/; HttpOnly; SameSite=Lax${secureFlag}; Max-Age=${SESSION_TTL_SECONDS}`
       );
       return { ok: true, authRequired: true, authenticated: true };
     });
 
-    fastify.post('/api/auth/logout', async (_req, reply) => {
+    fastify.post('/api/auth/logout', async (req, reply) => {
+      const secureFlag = isHttpsRequest(req.headers, req.protocol) ? '; Secure' : '';
       reply.header(
         'Set-Cookie',
-        `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+        `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax${secureFlag}; Max-Age=0`
       );
       return { ok: true };
     });

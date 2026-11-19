@@ -81,6 +81,7 @@ services:
       - BUSINESS_HOURS_START=${BUSINESS_HOURS_START:-09:00}
       - BUSINESS_HOURS_END=${BUSINESS_HOURS_END:-19:00}
       - BUSINESS_ALLOWED_DAYS=${BUSINESS_ALLOWED_DAYS:-1,2,3,4,5,6}
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-true}
       - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
       - TZ=${TZ:-America/Argentina/Buenos_Aires}
     volumes:

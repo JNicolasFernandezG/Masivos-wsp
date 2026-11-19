@@ -3,6 +3,7 @@ import type { AppConfig } from '../config.js';
 import type { SqliteDb } from '../db/database.js';
 import type { WahaClient } from '../services/wahaClient.js';
 import type { BatchWorker } from '../worker/batchWorker.js';
+import { isRequestAuthenticated } from './authRoutes.js';
 
 export interface HealthRouteDeps {
   db: SqliteDb;
@@ -13,13 +14,22 @@ export interface HealthRouteDeps {
 
 export function createHealthRoutes(deps: HealthRouteDeps): FastifyPluginAsync {
   return async (fastify) => {
-    fastify.get('/api/health', async () => {
+    fastify.get('/api/health', async (req) => {
       let dbOk = false;
       try {
         deps.db.prepare('SELECT 1 AS ok').get();
         dbOk = true;
       } catch {
         dbOk = false;
+      }
+
+      const authenticated = isRequestAuthenticated(req.headers, deps.config.adminApiToken);
+      if (!authenticated) {
+        return {
+          ok: dbOk,
+          db: dbOk ? 'ok' : 'error',
+          authRequired: true,
+        };
       }
 
       const wahaReachable = await deps.wahaClient.ping();

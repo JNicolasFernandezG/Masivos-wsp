@@ -52,6 +52,10 @@ const envSchema = z.object({
     .default('19:00'),
   BUSINESS_ALLOWED_DAYS: z.string().default('1,2,3,4,5,6'),
 
+  AUTH_REQUIRED: z
+    .string()
+    .default('false')
+    .transform((v) => v.toLowerCase() === 'true' || v === '1'),
   ADMIN_API_TOKEN: z.string().default(''),
 });
 
@@ -82,11 +86,21 @@ export interface AppConfig {
   businessHoursStart: string;
   businessHoursEnd: string;
   businessAllowedDays: number[];
+  authRequired: boolean;
   adminApiToken: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.parse(env);
+  if (
+    parsed.AUTH_REQUIRED &&
+    (!parsed.ADMIN_API_TOKEN.trim() ||
+      parsed.ADMIN_API_TOKEN.trim() === 'cambia_esta_clave_de_acceso')
+  ) {
+    throw new Error(
+      'AUTH_REQUIRED=true exige configurar un ADMIN_API_TOKEN seguro y distinto del placeholder en .env.'
+    );
+  }
   const minDelay = parsed.WORKER_MIN_DELAY_MS;
   const maxDelay = Math.max(minDelay, parsed.WORKER_MAX_DELAY_MS);
   const chunkPauseMin = parsed.WORKER_CHUNK_PAUSE_MIN_MS;
@@ -128,6 +142,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     businessHoursStart: parsed.BUSINESS_HOURS_START,
     businessHoursEnd: parsed.BUSINESS_HOURS_END,
     businessAllowedDays: allowedDays.length > 0 ? allowedDays : [1, 2, 3, 4, 5, 6],
+    authRequired: parsed.AUTH_REQUIRED,
     adminApiToken: parsed.ADMIN_API_TOKEN,
   };
 }

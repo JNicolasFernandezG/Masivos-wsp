@@ -42,6 +42,7 @@ export function buildApp(options: BuildAppOptions): AppContext {
   const { config, db, wahaClient } = options;
   const app = Fastify({
     logger: options.logger ?? config.nodeEnv !== 'test',
+    trustProxy: true,
   });
 
   const batchRepo = new BatchRepository(db);

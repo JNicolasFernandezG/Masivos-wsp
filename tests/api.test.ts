@@ -42,9 +42,20 @@ describe('HTTP API integration', () => {
 
     const healthRes = await app.inject({ method: 'GET', url: '/api/health' });
     expect(healthRes.statusCode).toBe(200);
-    expect(healthRes.json().ok).toBe(true);
-    expect(healthRes.json().config.authRequired).toBe(true);
-    expect(healthRes.json().config.defaultMessageTemplate).toContain('Asistodo');
+    expect(healthRes.json()).toEqual({ ok: true, db: 'ok', authRequired: true });
+    expect(healthRes.json().config).toBeUndefined();
+    expect(healthRes.json().worker).toBeUndefined();
+    expect(healthRes.json().wahaReachable).toBeUndefined();
+
+    const healthAuthRes = await app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(healthAuthRes.statusCode).toBe(200);
+    expect(healthAuthRes.json().ok).toBe(true);
+    expect(healthAuthRes.json().config.authRequired).toBe(true);
+    expect(healthAuthRes.json().config.defaultMessageTemplate).toContain('Asistodo');
 
     // Sin ADMIN_API_TOKEN debe devolver 401
     const unauthRes = await app.inject({ method: 'GET', url: '/api/batches' });
@@ -341,6 +352,96 @@ describe('HTTP API integration', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toContain('excede el máximo permitido');
+
+    await app.close();
+    db.close();
+  });
+
+  it('falla al iniciar si AUTH_REQUIRED=true y falta ADMIN_API_TOKEN o usa el valor por defecto', () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'test',
+        DATABASE_PATH: ':memory:',
+        AUTH_REQUIRED: 'true',
+        ADMIN_API_TOKEN: '',
+      })
+    ).toThrow();
+
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'test',
+        DATABASE_PATH: ':memory:',
+        AUTH_REQUIRED: 'true',
+        ADMIN_API_TOKEN: 'cambia_esta_clave_de_acceso',
+      })
+    ).toThrow();
+  });
+
+  it('agrega cookie Secure detrás de proxy HTTPS y bloquea tras 5 intentos fallidos por IP', async () => {
+    const adminToken = 'clave-super-segura-proxy-test-123';
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      AUTH_REQUIRED: 'true',
+      ADMIN_API_TOKEN: adminToken,
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    const httpsLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: {
+        'x-forwarded-for': '203.0.113.10',
+        'x-forwarded-proto': 'https',
+      },
+      payload: { password: adminToken },
+    });
+    expect(httpsLogin.statusCode).toBe(200);
+    const cookieAttr = String(httpsLogin.headers['set-cookie']);
+    expect(cookieAttr).toContain('HttpOnly');
+    expect(cookieAttr).toContain('SameSite=Lax');
+    expect(cookieAttr).toContain('; Secure');
+
+    const healthWithCookie = await app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { cookie: cookieAttr.split(';')[0] },
+    });
+    expect(healthWithCookie.statusCode).toBe(200);
+    expect(healthWithCookie.json().config.defaultMessageTemplate).toContain('Asistodo');
+
+    for (let i = 0; i < 5; i += 1) {
+      const failRes = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { 'x-forwarded-for': '203.0.113.20' },
+        payload: { password: 'clave-incorrecta' },
+      });
+      expect(failRes.statusCode).toBe(401);
+    }
+
+    const blockedRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'x-forwarded-for': '203.0.113.20' },
+      payload: { password: adminToken },
+    });
+    expect(blockedRes.statusCode).toBe(429);
+
+    const otherIpRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'x-forwarded-for': '203.0.113.21' },
+      payload: { password: adminToken },
+    });
+    expect(otherIpRes.statusCode).toBe(200);
 
     await app.close();
     db.close();

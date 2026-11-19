@@ -626,6 +626,8 @@ function renderBatchesList(batches) {
   for (const b of batches) {
     const done = b.sent_count + b.error_count + b.cancelled_count;
     const pct = b.total_count > 0 ? Math.round((done / b.total_count) * 100) : 0;
+    const progressFill = el('div', { className: 'progress-fill' });
+    progressFill.style.width = `${pct}%`;
     const card = el(
       'div',
       {
@@ -645,9 +647,7 @@ function renderBatchesList(batches) {
           className: 'muted',
           textContent: `Enviados: ${b.sent_count}/${b.total_count} · Pendientes: ${b.pending_count} · Errores: ${b.error_count}`,
         }),
-        el('div', { className: 'progress-bar' }, [
-          el('div', { className: 'progress-fill', style: `width: ${pct}%` }),
-        ]),
+        el('div', { className: 'progress-bar' }, [progressFill]),
       ]
     );
     container.appendChild(card);
