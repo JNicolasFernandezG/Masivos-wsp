@@ -113,6 +113,7 @@ export function buildApp(options: BuildAppOptions): AppContext {
     app.register(fastifyStatic, {
       root: publicDir,
       prefix: '/',
+      dotfiles: 'deny',
     });
   }
 

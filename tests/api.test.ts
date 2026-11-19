@@ -204,6 +204,17 @@ describe('HTTP API integration', () => {
     expect(indexRes.body).toContain('Masivos-wsp');
     expect(indexRes.body).not.toContain('sample.csv');
 
+    const dotEnvRes = await app.inject({ method: 'GET', url: '/.env' });
+    expect(dotEnvRes.statusCode).toBeGreaterThanOrEqual(400);
+
+    const sessionRes = await app.inject({
+      method: 'GET',
+      url: '/api/waha/session',
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(sessionRes.statusCode).toBe(200);
+    expect(sessionRes.json().session.raw).toBeUndefined();
+
     await app.close();
     db.close();
   });

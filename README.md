@@ -44,7 +44,7 @@ Configura al menos `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD` y `WAHA_WEBHOOK_HMA
 docker compose up -d --build
 ```
 
-3. Abre el panel web en `http://localhost:4000` (o el puerto configurado en `APP_PORT`):
+3. Abre el panel web en `http://localhost:8084` (o el puerto configurado en `CADDY_PORT`):
    - Ve a **Conexión WAHA / QR**, inicia la sesión si no arrancó sola y escanea el QR (o solicita código por teléfono).
    - Una vez que el estado sea `WORKING`, carga un lote desde **Nuevo Lote** o vía API REST.
 
@@ -111,22 +111,18 @@ Si `ADMIN_API_TOKEN` está definido, envía `X-Admin-Token: <token>` o `Authoriz
 3. **Tope diario y horario comercial:** máximo 125 envíos/día (`WORKER_DAILY_LIMIT=125`) y prohibido enviar fuera de `09:00–19:00` (`BUSINESS_HOURS_ENABLED=true`).
 4. Usa un número dedicado (nunca el principal de la empresa) y realiza calentamiento gradual durante 1–2 semanas antes de enviar lotes.
 
-## Despliegue en servidor Linux solo para red local (Nginx + Docker)
+## Despliegue detrás de tu Nginx existente (Caddy en puerto `8084`)
 
-1. En el servidor Linux, mantén en `.env` el enlace en loopback:
-   - `APP_BIND_HOST=127.0.0.1`
-   - `WAHA_BIND_HOST=127.0.0.1`
-   De este modo WAHA queda inaccesible desde fuera de Docker y el contenedor `app` solo responde en `127.0.0.1:4000` hacia Nginx.
-2. Copia [deploy/nginx/masivos-wsp.conf](deploy/nginx/masivos-wsp.conf) a `/etc/nginx/sites-available/masivos-wsp.conf`, ajusta `allow` a la subred exacta de tu oficina (ej. `192.168.1.0/24`), habilita el sitio y recarga Nginx:
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/masivos-wsp.conf /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl reload nginx
-   ```
-3. Refuerza el firewall (`ufw`) permitiendo el puerto `80` (o `443`) únicamente desde tu red local y bloqueando los puertos `3000` y `4000`.
+1. Ni `masivos-app` ni `masivos-waha` exponen puertos al host: únicamente `masivos-caddy` escucha en `CADDY_PORT` (`8084` por defecto) usando [deploy/caddy/Caddyfile](deploy/caddy/Caddyfile) y reenvía hacia `app:4000`.
+2. En el `.env` del servidor Linux:
+   - `CADDY_PORT=8084`
+   - `CADDY_ALLOWED_IPS=private_ranges` (o la IP interna de tu servidor Nginx + `127.0.0.1`).
+3. En tu Nginx ya existente, apunta el `proxy_pass` hacia el puerto `8084` de Caddy (desactivando buffering en `/api/events` para SSE).
 
 ## CI/CD con GitHub Actions
 
-- **CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)):** corre en cada `push` / `pull_request` sobre `main` (`npm ci`, `typecheck`, `test`, `build`, validación de `docker-compose.yml` y build de la imagen Docker).
-- **CD ([.github/workflows/deploy.yml](.github/workflows/deploy.yml)):** se ejecuta al aprobarse `CI` en `main` (o manualmente con `workflow_dispatch`) mediante [deploy/deploy.sh](deploy/deploy.sh):
-  - **Servidor en red local (sin exponer SSH a internet):** configura `DEPLOY_MODE=self-hosted` y `DEPLOY_PATH=/opt/masivos-wsp` en *Repository Variables* e instala un **GitHub Actions self-hosted runner** en el servidor Linux.
-  - **VPS accesible por SSH:** configura `DEPLOY_MODE=ssh`, `DEPLOY_PATH=/opt/masivos-wsp` en *Variables* y `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` en *Secrets*.
+- **CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)):** corre en cada `push` / `pull_request` sobre `main` (`npm ci`, `typecheck`, `test`, `build`, validación de `docker-compose.yml` y build de las imágenes Docker).
+- **CD ([.github/workflows/deploy.yml](.github/workflows/deploy.yml)):** corre en el **self-hosted runner** del servidor Linux ante cada `push` a `main` o manualmente desde **Run workflow** (`workflow_dispatch`):
+  - Crea el secreto `ENV_PROD` en *Settings → Secrets and variables → Actions → Secrets* con todo el contenido de tu `.env` de producción.
+  - Opcionalmente define la variable `DEPLOY_PATH` en *Variables* (por defecto `/opt/masivos-wsp`).
+  - El workflow actualiza el código (`git fetch` + `git reset --hard origin/main`), genera `.env` temporal (`chmod 600`), ejecuta `docker compose up -d --build --remove-orphans`, borra `.env` del disco inmediatamente (`rm -f .env`) y limpia imágenes obsoletas (`docker image prune -f`).

@@ -1,0 +1,9 @@
+FROM caddy:2-alpine
+
+# Remueve file capabilities (cap_net_bind_service) heredadas para correr sin root
+# junto con cap_drop: ALL y no-new-privileges: true en el puerto 8084.
+RUN cp /usr/bin/caddy /tmp/caddy \
+  && mv /tmp/caddy /usr/bin/caddy \
+  && chmod 0755 /usr/bin/caddy
+
+USER nobody

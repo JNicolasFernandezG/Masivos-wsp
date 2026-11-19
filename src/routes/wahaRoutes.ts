@@ -23,7 +23,14 @@ export function createWahaRoutes(deps: WahaRouteDeps): FastifyPluginAsync {
         return {
           reachable: true,
           sessionName,
-          session: session ?? { name: sessionName, status: 'STOPPED' },
+          session: session
+            ? {
+                name: session.name,
+                status: session.status,
+                engine: session.engine,
+                me: session.me ?? null,
+              }
+            : { name: sessionName, status: 'STOPPED' },
         };
       } catch (err) {
         return {

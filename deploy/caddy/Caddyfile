@@ -1,0 +1,49 @@
+{
+	admin off
+	auto_https off
+}
+
+:{$CADDY_PORT:8084} {
+	header {
+		-Server
+		-Via
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	request_body {
+		max_size 10MB
+	}
+
+	@blocked not remote_ip {$CADDY_ALLOWED_IPS:private_ranges}
+	handle @blocked {
+		respond 403
+	}
+
+	@sensitive path_regexp (?i)(^|/)\.|(\.env|docker-compose|dockerfile|\.db|\.sqlite|\.bak|\.log|package(-lock)?\.json|tsconfig\.json)
+	handle @sensitive {
+		respond 404
+	}
+
+	@webhooks path /api/webhooks/*
+	handle @webhooks {
+		respond 403
+	}
+
+	handle /api/events {
+		reverse_proxy app:4000 {
+			flush_interval -1
+		}
+	}
+
+	@allowed path / /index.html /styles.css /app.js /favicon.ico /api/health /api/waha/* /api/batches /api/batches/* /api/messages /api/messages/* /api/conversations
+	handle @allowed {
+		reverse_proxy app:4000
+	}
+
+	handle {
+		respond 404
+	}
+}

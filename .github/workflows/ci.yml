@@ -37,5 +37,8 @@ jobs:
       - name: Validar docker-compose.yml
         run: docker compose --env-file .env.example config --quiet
 
-      - name: Probar build de imagen Docker
-        run: docker build -t masivos-wsp-app:ci .
+      - name: Probar build de imagen Docker (app, waha y caddy)
+        run: |
+          docker build -t masivos-wsp-app:ci .
+          docker build -t masivos-wsp-waha:ci -f Dockerfile.waha .
+          docker build -t masivos-wsp-caddy:ci -f Dockerfile.caddy .

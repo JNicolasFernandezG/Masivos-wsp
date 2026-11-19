@@ -1,9 +1,7 @@
 name: CD - Deploy a Linux
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -12,37 +10,69 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-self-hosted:
-    name: Deploy en servidor Linux (Self-Hosted Runner en red local)
-    runs-on: [self-hosted, linux]
-    if: >-
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') &&
-      vars.DEPLOY_MODE == 'self-hosted'
+  deploy:
+    name: Desplegar en servidor Linux (Self-Hosted)
+    runs-on: self-hosted
 
     steps:
-      - name: Ejecutar script de despliegue local
-        working-directory: ${{ vars.DEPLOY_PATH || '/opt/masivos-wsp' }}
-        run: bash deploy/deploy.sh
-
-  deploy-ssh:
-    name: Deploy vía SSH (VPS / servidor accesible)
-    runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') &&
-      vars.DEPLOY_MODE == 'ssh'
-
-    steps:
-      - name: Instalar clave SSH y desplegar
+      - name: Desplegar con Docker Compose y .env efímero
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/masivos-wsp' }}
+          ENV_PROD: ${{ secrets.ENV_PROD }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-          ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "cd '$DEPLOY_PATH' && bash deploy/deploy.sh"
+          set -euo pipefail
+
+          if [ -z "$ENV_PROD" ]; then
+            echo "[deploy] ERROR: el secreto ENV_PROD no está configurado o está vacío." >&2
+            exit 1
+          fi
+
+          if [ ! -d "$DEPLOY_PATH/.git" ]; then
+            echo "[deploy] ERROR: no se encontró el repositorio Git en $DEPLOY_PATH (ajusta la variable DEPLOY_PATH si usas otra ruta)." >&2
+            exit 1
+          fi
+
+          cd "$DEPLOY_PATH"
+
+          cleanup() {
+            rm -f .env
+          }
+          trap cleanup EXIT
+
+          echo "[deploy] Actualizando código desde origin/main..."
+          git fetch origin main
+          git reset --hard origin/main
+
+          echo "[deploy] Generando .env temporal con permisos 600..."
+          (
+            umask 077
+            printf '%s\n' "$ENV_PROD" | tr -d '\r' > .env
+          )
+          chmod 600 .env
+
+          mkdir -p data/app
+
+          echo "[deploy] Reconstruyendo y levantando contenedores..."
+          docker compose up -d --build --remove-orphans
+
+          CADDY_PORT_VAL="$(grep -E '^CADDY_PORT=' .env | tail -n1 | cut -d '=' -f2- || true)"
+          CADDY_PORT_VAL="${CADDY_PORT_VAL:-8084}"
+
+          echo "[deploy] Eliminando .env del disco..."
+          rm -f .env
+
+          echo "[deploy] Limpiando imágenes Docker obsoletas..."
+          docker image prune -f
+
+          echo "[deploy] Verificando salud en http://127.0.0.1:${CADDY_PORT_VAL}/api/health ..."
+          for i in $(seq 1 20); do
+            if curl -fsS "http://127.0.0.1:${CADDY_PORT_VAL}/api/health" >/dev/null 2>&1; then
+              echo "[deploy] Despliegue exitoso y servicio healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "[deploy] ERROR: la aplicación no respondió en /api/health a tiempo." >&2
+          docker compose logs --tail=40 app caddy
+          exit 1

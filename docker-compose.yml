@@ -1,10 +1,21 @@
 services:
   waha:
-    image: ${WAHA_IMAGE:-devlikeapro/waha:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.waha
+      args:
+        WAHA_IMAGE: ${WAHA_IMAGE:-devlikeapro/waha:latest}
     container_name: masivos-waha
     restart: unless-stopped
-    ports:
-      - "${WAHA_BIND_HOST:-127.0.0.1}:${WAHA_PORT:-3000}:3000"
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+      - /home/node:rw,noexec,nosuid,uid=1000,gid=1000,size=16m
     environment:
       - WHATSAPP_DEFAULT_ENGINE=GOWS
       - WAHA_API_KEY=${WAHA_API_KEY:-cambia_esta_api_key_segura}
@@ -36,8 +47,14 @@ services:
     restart: unless-stopped
     depends_on:
       - waha
-    ports:
-      - "${APP_BIND_HOST:-127.0.0.1}:${APP_PORT:-4000}:4000"
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     environment:
       - NODE_ENV=production
       - PORT=4000
@@ -80,6 +97,35 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - masivos_net
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: masivos-caddy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /config:rw,noexec,nosuid,uid=65534,gid=65534,size=16m
+      - /data:rw,noexec,nosuid,uid=65534,gid=65534,size=16m
+    ports:
+      - "${CADDY_BIND_HOST:-0.0.0.0}:${CADDY_PORT:-8084}:${CADDY_PORT:-8084}"
+    environment:
+      - CADDY_PORT=${CADDY_PORT:-8084}
+      - CADDY_ALLOWED_IPS=${CADDY_ALLOWED_IPS:-private_ranges}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - masivos_net
 

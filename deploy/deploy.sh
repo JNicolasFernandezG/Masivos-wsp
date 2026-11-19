@@ -8,6 +8,7 @@ if [ ! -f ".env" ]; then
   echo "[deploy] ERROR: falta el archivo .env en $APP_DIR" >&2
   exit 1
 fi
+chmod 600 .env
 
 echo "[deploy] Actualizando codigo desde origin/main..."
 git fetch origin main
@@ -15,10 +16,11 @@ git checkout main
 git pull --ff-only origin main
 
 echo "[deploy] Reconstruyendo y levantando contenedores..."
+mkdir -p data/app
 docker compose up -d --build --remove-orphans
 
-PORT_VALUE="$(grep -E '^APP_PORT=' .env | cut -d '=' -f2- | tr -d '\r' || true)"
-PORT_VALUE="${PORT_VALUE:-4000}"
+PORT_VALUE="$(grep -E '^CADDY_PORT=' .env | cut -d '=' -f2- | tr -d '\r' || true)"
+PORT_VALUE="${PORT_VALUE:-8084}"
 
 echo "[deploy] Verificando salud en http://127.0.0.1:${PORT_VALUE}/api/health ..."
 for i in $(seq 1 20); do
@@ -30,5 +32,5 @@ for i in $(seq 1 20); do
 done
 
 echo "[deploy] ERROR: la app no respondio /api/health a tiempo." >&2
-docker compose logs --tail=50 app
+docker compose logs --tail=50 app caddy
 exit 1

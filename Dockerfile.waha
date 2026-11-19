@@ -1,0 +1,7 @@
+ARG WAHA_IMAGE=devlikeapro/waha:latest
+FROM ${WAHA_IMAGE}
+
+RUN mkdir -p /app/.sessions /app/.media \
+  && chown -R node:node /app/.sessions /app/.media
+
+USER node
