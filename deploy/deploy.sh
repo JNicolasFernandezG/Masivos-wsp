@@ -17,9 +17,10 @@ git pull --ff-only origin main
 
 echo "[deploy] Reconstruyendo y levantando contenedores..."
 mkdir -p data/app
+docker rm -f masivos-caddy >/dev/null 2>&1 || true
 docker compose up -d --build --remove-orphans
 
-PORT_VALUE="$(grep -E '^CADDY_PORT=' .env | cut -d '=' -f2- | tr -d '\r' || true)"
+PORT_VALUE="$(grep -E '^(APP_PORT|CADDY_PORT)=' .env | tail -n1 | cut -d '=' -f2- | tr -d '\r' || true)"
 PORT_VALUE="${PORT_VALUE:-8084}"
 
 echo "[deploy] Verificando salud en http://127.0.0.1:${PORT_VALUE}/api/health ..."
@@ -32,5 +33,5 @@ for i in $(seq 1 20); do
 done
 
 echo "[deploy] ERROR: la app no respondio /api/health a tiempo." >&2
-docker compose logs --tail=50 app caddy
+docker compose logs --tail=50 app
 exit 1

@@ -43,6 +43,20 @@ export function buildApp(options: BuildAppOptions): AppContext {
   const app = Fastify({
     logger: options.logger ?? config.nodeEnv !== 'test',
     trustProxy: true,
+    bodyLimit: 10 * 1024 * 1024,
+  });
+
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    reply.header('X-Robots-Tag', 'noindex, nofollow');
+    reply.header(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+    return payload;
   });
 
   const batchRepo = new BatchRepository(db);
@@ -64,28 +78,39 @@ export function buildApp(options: BuildAppOptions): AppContext {
     },
   });
 
-  if (config.adminApiToken) {
-    app.addHook('onRequest', async (req, reply) => {
-      const urlPath = req.url.split('?')[0];
-      if (!urlPath.startsWith('/api/')) {
-        return;
-      }
-      if (
-        urlPath === '/api/health' ||
-        urlPath === '/api/webhooks/waha' ||
-        urlPath.startsWith('/api/auth/')
-      ) {
-        return;
-      }
-
-      if (!isRequestAuthenticated(req.headers, config.adminApiToken)) {
-        return reply.status(401).send({
+  app.addHook('onRequest', async (req, reply) => {
+    const urlPath = req.url.split('?')[0];
+    if (urlPath.startsWith('/api/webhooks/')) {
+      const forwarded =
+        req.headers['x-forwarded-for'] ||
+        req.headers['x-real-ip'] ||
+        req.headers.forwarded;
+      if (forwarded) {
+        return reply.status(403).send({
           ok: false,
-          error: 'No autorizado. Inicia sesión o envía ADMIN_API_TOKEN.',
+          error: 'Acceso externo prohibido a webhooks internos.',
         });
       }
-    });
-  }
+      return;
+    }
+
+    if (!config.adminApiToken) {
+      return;
+    }
+    if (!urlPath.startsWith('/api/')) {
+      return;
+    }
+    if (urlPath === '/api/health' || urlPath.startsWith('/api/auth/')) {
+      return;
+    }
+
+    if (!isRequestAuthenticated(req.headers, config.adminApiToken)) {
+      return reply.status(401).send({
+        ok: false,
+        error: 'No autorizado. Inicia sesión o envía ADMIN_API_TOKEN.',
+      });
+    }
+  });
 
   app.register(createAuthRoutes(config));
   app.register(createHealthRoutes({ db, wahaClient, worker, config }));

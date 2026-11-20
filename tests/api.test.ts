@@ -446,4 +446,38 @@ describe('HTTP API integration', () => {
     await app.close();
     db.close();
   });
+
+  it('envía cabeceras de seguridad CSP/anti-indexación y bloquea webhooks desde proxy externo', async () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    const rootRes = await app.inject({ method: 'GET', url: '/' });
+    expect(rootRes.statusCode).toBe(200);
+    expect(rootRes.headers['x-content-type-options']).toBe('nosniff');
+    expect(rootRes.headers['x-frame-options']).toBe('DENY');
+    expect(rootRes.headers['x-robots-tag']).toBe('noindex, nofollow');
+    expect(String(rootRes.headers['content-security-policy'])).toContain("script-src 'self'");
+    expect(String(rootRes.headers['content-security-policy'])).toContain("style-src 'self'");
+
+    const proxiedWebhook = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/waha',
+      headers: { 'x-forwarded-for': '203.0.113.50' },
+      payload: { event: 'message' },
+    });
+    expect(proxiedWebhook.statusCode).toBe(403);
+
+    await app.close();
+    db.close();
+  });
 });

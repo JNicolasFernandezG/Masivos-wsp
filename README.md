@@ -44,7 +44,7 @@ Configura al menos `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD` y `WAHA_WEBHOOK_HMA
 docker compose up -d --build
 ```
 
-3. Abre el panel web en `http://localhost:8084` (o el puerto configurado en `CADDY_PORT`):
+3. Abre el panel web en `http://localhost:8084` (o el puerto configurado en `APP_PORT`):
    - Ve a **Conexión WAHA / QR**, inicia la sesión si no arrancó sola y escanea el QR (o solicita código por teléfono).
    - Una vez que el estado sea `WORKING`, carga un lote desde **Nuevo Lote** o vía API REST.
 
@@ -111,18 +111,19 @@ Si `ADMIN_API_TOKEN` está definido en `.env`, el panel web solicita esa clave e
 3. **Tope diario y horario comercial:** máximo 125 envíos/día (`WORKER_DAILY_LIMIT=125`) y prohibido enviar fuera de `09:00–19:00` (`BUSINESS_HOURS_ENABLED=true`).
 4. Usa un número dedicado (nunca el principal de la empresa) y realiza calentamiento gradual durante 1–2 semanas antes de enviar lotes.
 
-## Despliegue detrás de tu Nginx existente (Caddy en puerto `8084`)
+## Despliegue detrás de tu Nginx existente (puerto `8084` directo en `app`)
 
-1. Ni `masivos-app` ni `masivos-waha` exponen puertos al host: únicamente `masivos-caddy` escucha en `CADDY_PORT` (`8084` por defecto) usando [deploy/caddy/Caddyfile](deploy/caddy/Caddyfile) y reenvía hacia `app:4000`.
-2. En el `.env` del servidor Linux:
-   - `CADDY_PORT=8084`
-   - `CADDY_ALLOWED_IPS=private_ranges` (o la IP interna de tu servidor Nginx + `127.0.0.1`).
-3. En tu Nginx ya existente, apunta el `proxy_pass` hacia el puerto `8084` de Caddy (desactivando buffering en `/api/events` para SSE).
+1. `masivos-waha` no expone puertos al host; únicamente `masivos-app` publica `APP_PORT` (`8084` por defecto, mapeado al puerto interno `4000`).
+2. En el `.env` / `ENV_PROD` del servidor Linux:
+   - `APP_PORT=8084` (o `APP_BIND_HOST=127.0.0.1` si Nginx corre en el mismo servidor).
+   - `AUTH_REQUIRED=true` y un `ADMIN_API_TOKEN` seguro.
+3. En tu Nginx ya existente, apunta el `proxy_pass` hacia `http://127.0.0.1:8084` (desactivando `proxy_buffering off` en `/api/events` para SSE y reenviando `X-Forwarded-For` + `X-Forwarded-Proto`).
 
 ## CI/CD con GitHub Actions
 
-- **CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)):** corre en cada `push` / `pull_request` sobre `main` (`npm ci`, `typecheck`, `test`, `build`, validación de `docker-compose.yml` y build de las imágenes Docker).
-- **CD ([.github/workflows/deploy.yml](.github/workflows/deploy.yml)):** corre en el **self-hosted runner** del servidor Linux ante cada `push` a `main` o manualmente desde **Run workflow** (`workflow_dispatch`):
-  - Crea el secreto `ENV_PROD` en *Settings → Secrets and variables → Actions → Secrets* con todo el contenido de tu `.env` de producción.
-  - Opcionalmente define la variable `DEPLOY_PATH` en *Variables* (por defecto `/opt/masivos-wsp`).
-  - El workflow actualiza el código (`git fetch` + `git reset --hard origin/main`), genera `.env` temporal (`chmod 600`), ejecuta `docker compose up -d --build --remove-orphans`, borra `.env` del disco inmediatamente (`rm -f .env`) y limpia imágenes obsoletas (`docker image prune -f`).
+- **Pipeline unificado ([.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml)):**
+  - Job **`verify` (`ubuntu-latest`):** corre `npm ci`, `typecheck`, `test`, `build`, validación de `docker-compose.yml` y build de las imágenes Docker (`app` y `waha`).
+  - Job **`deploy` (`self-hosted`):** corre después de que pase `verify` en `push` a `main` o manualmente desde **Run workflow** (`workflow_dispatch`):
+    - Crea el secreto `ENV_PROD` en *Settings → Secrets and variables → Actions → Secrets* con todo el contenido de tu `.env` de producción.
+    - Opcionalmente define la variable `DEPLOY_PATH` en *Variables* (por defecto `/opt/masivos-wsp`).
+    - El workflow actualiza el código (`git fetch` + `git reset --hard origin/main`), genera `.env` temporal (`chmod 600`), ejecuta `docker compose up -d --build --remove-orphans`, borra `.env` del disco inmediatamente (`rm -f .env`) y limpia imágenes obsoletas (`docker image prune -f`).

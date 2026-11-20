@@ -44,11 +44,10 @@ jobs:
       - name: Validar docker-compose.yml
         run: docker compose --env-file .env.example config --quiet
 
-      - name: Probar build de imagen Docker (app, waha y caddy)
+      - name: Probar build de imagen Docker (app y waha)
         run: |
           docker build -t masivos-wsp-app:ci .
           docker build -t masivos-wsp-waha:ci -f Dockerfile.waha .
-          docker build -t masivos-wsp-caddy:ci -f Dockerfile.caddy .
 
   deploy:
     name: CD - Desplegar en servidor Linux (Self-Hosted)
@@ -103,11 +102,14 @@ jobs:
 
           mkdir -p data/app
 
+          # Libera el puerto si existia el contenedor legado masivos-caddy antes de reasignarlo a app
+          docker rm -f masivos-caddy >/dev/null 2>&1 || true
+
           echo "[deploy] Reconstruyendo y levantando contenedores..."
           docker compose up -d --build --remove-orphans
 
-          CADDY_PORT_VAL="$(grep -E '^CADDY_PORT=' .env | tail -n1 | cut -d '=' -f2- || true)"
-          CADDY_PORT_VAL="${CADDY_PORT_VAL:-8084}"
+          APP_PORT_VAL="$(grep -E '^(APP_PORT|CADDY_PORT)=' .env | tail -n1 | cut -d '=' -f2- || true)"
+          APP_PORT_VAL="${APP_PORT_VAL:-8084}"
 
           echo "[deploy] Eliminando .env del disco..."
           rm -f .env
@@ -115,9 +117,9 @@ jobs:
           echo "[deploy] Limpiando imágenes Docker obsoletas..."
           docker image prune -f
 
-          echo "[deploy] Verificando salud en http://127.0.0.1:${CADDY_PORT_VAL}/api/health ..."
+          echo "[deploy] Verificando salud en http://127.0.0.1:${APP_PORT_VAL}/api/health ..."
           for i in $(seq 1 20); do
-            if curl -fsS "http://127.0.0.1:${CADDY_PORT_VAL}/api/health" >/dev/null 2>&1; then
+            if curl -fsS "http://127.0.0.1:${APP_PORT_VAL}/api/health" >/dev/null 2>&1; then
               echo "[deploy] Despliegue exitoso y servicio healthy."
               exit 0
             fi
@@ -125,5 +127,5 @@ jobs:
           done
 
           echo "[deploy] ERROR: la aplicación no respondió en /api/health a tiempo." >&2
-          docker compose logs --tail=40 app caddy
+          docker compose logs --tail=40 app
           exit 1

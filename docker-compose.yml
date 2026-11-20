@@ -84,6 +84,8 @@ services:
       - AUTH_REQUIRED=${AUTH_REQUIRED:-true}
       - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
       - TZ=${TZ:-America/Argentina/Buenos_Aires}
+    ports:
+      - "${APP_BIND_HOST:-${CADDY_BIND_HOST:-0.0.0.0}}:${APP_PORT:-${CADDY_PORT:-8084}}:4000"
     volumes:
       - ./data/app:/app/data
     healthcheck:
@@ -98,35 +100,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks:
-      - masivos_net
-
-  caddy:
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-    container_name: masivos-caddy
-    restart: unless-stopped
-    depends_on:
-      app:
-        condition: service_healthy
-    user: "65534:65534"
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=16m
-      - /config:rw,noexec,nosuid,uid=65534,gid=65534,size=16m
-      - /data:rw,noexec,nosuid,uid=65534,gid=65534,size=16m
-    ports:
-      - "${CADDY_BIND_HOST:-0.0.0.0}:${CADDY_PORT:-8084}:${CADDY_PORT:-8084}"
-    environment:
-      - CADDY_PORT=${CADDY_PORT:-8084}
-      - CADDY_ALLOWED_IPS=${CADDY_ALLOWED_IPS:-private_ranges}
-    volumes:
-      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - masivos_net
 
