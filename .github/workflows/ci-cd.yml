@@ -1,18 +1,69 @@
-name: CD - Deploy a Linux
+name: CI/CD - Verificar y Desplegar
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
+    inputs:
+      skip_verify:
+        description: 'Saltar tests de CI y desplegar directo en Linux'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
+  verify:
+    name: CI - Typecheck, tests, build y Docker
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Verificar tipos (TypeScript)
+        run: npm run typecheck
+
+      - name: Ejecutar suite de pruebas
+        run: npm test
+
+      - name: Compilar proyecto
+        run: npm run build
+
+      - name: Validar docker-compose.yml
+        run: docker compose --env-file .env.example config --quiet
+
+      - name: Probar build de imagen Docker (app, waha y caddy)
+        run: |
+          docker build -t masivos-wsp-app:ci .
+          docker build -t masivos-wsp-waha:ci -f Dockerfile.waha .
+          docker build -t masivos-wsp-caddy:ci -f Dockerfile.caddy .
+
   deploy:
-    name: Desplegar en servidor Linux (Self-Hosted)
+    name: CD - Desplegar en servidor Linux (Self-Hosted)
+    needs: verify
+    if: >-
+      !cancelled() &&
+      github.event_name != 'pull_request' &&
+      (
+        needs.verify.result == 'success' ||
+        (github.event_name == 'workflow_dispatch' && inputs.skip_verify && needs.verify.result == 'skipped')
+      )
     runs-on: self-hosted
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
 
     steps:
       - name: Desplegar con Docker Compose y .env efímero
