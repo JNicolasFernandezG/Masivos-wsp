@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/database.js';
+import { createSsoToken } from '../src/routes/authRoutes.js';
 import type { WahaClient } from '../src/services/wahaClient.js';
 
 function createMockWaha(): WahaClient {
@@ -616,6 +617,197 @@ describe('HTTP API integration', () => {
       headers: { 'x-admin-token': adminToken },
     });
     expect(convAfterRes.json().conversations).toEqual([]);
+
+    await app.close();
+    db.close();
+  });
+
+  it('permite ingreso directo SSO con JWT HS256 (GET y POST), exige un solo uso y rechaza tokens inválidos/expirados', async () => {
+    const adminToken = 'clave-admin-sso-test-123';
+    const ssoSecret = 'secreto-sso-super-seguro-32-caracteres-min';
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      AUTH_REQUIRED: 'true',
+      ADMIN_API_TOKEN: adminToken,
+      SSO_SECRET: ssoSecret,
+      SSO_MAX_TTL_SECONDS: '120',
+      SSO_ALLOWED_ISSUER: 'portal-externo',
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    // 1) GET /api/auth/sso con JWT válido -> setea cookie HttpOnly y redirige 302 a /
+    const validToken = createSsoToken(
+      { sub: 'operador@asistodo.com', iss: 'portal-externo' },
+      ssoSecret,
+      60
+    );
+    const getSsoRes = await app.inject({
+      method: 'GET',
+      url: `/api/auth/sso?token=${encodeURIComponent(validToken)}`,
+      headers: {
+        accept: 'text/html',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-for': '198.51.100.10',
+      },
+    });
+    expect(getSsoRes.statusCode).toBe(302);
+    expect(getSsoRes.headers.location).toBe('/');
+    expect(getSsoRes.headers['cache-control']).toBe('no-store');
+    expect(getSsoRes.headers['referrer-policy']).toBe('no-referrer');
+    const ssoCookieAttr = String(getSsoRes.headers['set-cookie']);
+    expect(ssoCookieAttr).toContain('masivos_session=');
+    expect(ssoCookieAttr).toContain('HttpOnly');
+    expect(ssoCookieAttr).toContain('SameSite=Lax');
+    expect(ssoCookieAttr).toContain('; Secure');
+
+    // Con la cookie obtenida por SSO puede operar sin pasar por login
+    const batchesAfterSso = await app.inject({
+      method: 'GET',
+      url: '/api/batches',
+      headers: { cookie: ssoCookieAttr.split(';')[0] },
+    });
+    expect(batchesAfterSso.statusCode).toBe(200);
+
+    // 2) Reutilizar el mismo token (mismo jti) debe rechazarse como "used"
+    const replayRes = await app.inject({
+      method: 'GET',
+      url: `/api/auth/sso?token=${encodeURIComponent(validToken)}`,
+      headers: {
+        accept: 'text/html',
+        'x-forwarded-for': '198.51.100.11',
+      },
+    });
+    expect(replayRes.statusCode).toBe(302);
+    expect(replayRes.headers.location).toBe('/?sso_error=used');
+
+    // 3) POST /api/auth/sso con formulario application/x-www-form-urlencoded -> 303 a /
+    const formToken = createSsoToken(
+      { sub: 'supervisor@asistodo.com', iss: 'portal-externo' },
+      ssoSecret,
+      60
+    );
+    const postFormRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sso',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'text/html',
+        'x-forwarded-for': '198.51.100.12',
+      },
+      payload: `token=${encodeURIComponent(formToken)}`,
+    });
+    expect(postFormRes.statusCode).toBe(303);
+    expect(postFormRes.headers.location).toBe('/');
+    expect(String(postFormRes.headers['set-cookie'])).toContain('masivos_session=');
+
+    // 4) Token expirado -> 401 (en modo JSON)
+    const expiredToken = createSsoToken(
+      { sub: 'operador@asistodo.com', iss: 'portal-externo', exp: Math.floor(Date.now() / 1000) - 5 },
+      ssoSecret
+    );
+    const expiredRes = await app.inject({
+      method: 'GET',
+      url: `/api/auth/sso?token=${encodeURIComponent(expiredToken)}`,
+      headers: {
+        accept: 'application/json',
+        'x-forwarded-for': '198.51.100.13',
+      },
+    });
+    expect(expiredRes.statusCode).toBe(401);
+    expect(expiredRes.json().code).toBe('expired');
+
+    // 5) Emisor (iss) incorrecto -> 401
+    const wrongIssToken = createSsoToken(
+      { sub: 'operador@asistodo.com', iss: 'otro-portal' },
+      ssoSecret,
+      60
+    );
+    const wrongIssRes = await app.inject({
+      method: 'GET',
+      url: `/api/auth/sso?token=${encodeURIComponent(wrongIssToken)}`,
+      headers: {
+        accept: 'application/json',
+        'x-forwarded-for': '198.51.100.14',
+      },
+    });
+    expect(wrongIssRes.statusCode).toBe(401);
+    expect(wrongIssRes.json().code).toBe('invalid');
+
+    // 6) TTL mayor a SSO_MAX_TTL_SECONDS -> 401
+    const tooLongToken = createSsoToken(
+      { sub: 'operador@asistodo.com', iss: 'portal-externo' },
+      ssoSecret,
+      600
+    );
+    const tooLongRes = await app.inject({
+      method: 'GET',
+      url: `/api/auth/sso?token=${encodeURIComponent(tooLongToken)}`,
+      headers: {
+        accept: 'application/json',
+        'x-forwarded-for': '198.51.100.15',
+      },
+    });
+    expect(tooLongRes.statusCode).toBe(401);
+
+    // 7) Firma con secreto equivocado -> 401
+    const badSigToken = createSsoToken(
+      { sub: 'operador@asistodo.com', iss: 'portal-externo' },
+      'secreto-incorrecto',
+      60
+    );
+    const badSigRes = await app.inject({
+      method: 'GET',
+      url: `/api/auth/sso?token=${encodeURIComponent(badSigToken)}`,
+      headers: {
+        accept: 'application/json',
+        'x-forwarded-for': '198.51.100.16',
+      },
+    });
+    expect(badSigRes.statusCode).toBe(401);
+
+    await app.close();
+    db.close();
+  });
+
+  it('rechaza SSO si SSO_SECRET no está configurado', async () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      ADMIN_API_TOKEN: 'clave-admin-test',
+      SSO_SECRET: '',
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    const disabledBrowserRes = await app.inject({
+      method: 'GET',
+      url: '/api/auth/sso?token=cualquiera',
+      headers: { accept: 'text/html' },
+    });
+    expect(disabledBrowserRes.statusCode).toBe(302);
+    expect(disabledBrowserRes.headers.location).toBe('/?sso_error=disabled');
+
+    const disabledJsonRes = await app.inject({
+      method: 'GET',
+      url: '/api/auth/sso?token=cualquiera',
+      headers: { accept: 'application/json' },
+    });
+    expect(disabledJsonRes.statusCode).toBe(503);
+    expect(disabledJsonRes.json().code).toBe('disabled');
 
     await app.close();
     db.close();

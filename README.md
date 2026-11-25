@@ -73,6 +73,8 @@ npm run worker
 
 Si `ADMIN_API_TOKEN` está definido en `.env`, el panel web solicita esa clave en la pantalla de login (`POST /api/auth/login`, sesión por cookie `HttpOnly` de 12 h) y las integraciones externas pueden enviar `X-Admin-Token: <clave>` o `Authorization: Bearer <clave>` en `/api/*` (excepto `/api/health`, `/api/auth/*` y `/api/webhooks/waha`, que valida `X-Webhook-Hmac` con SHA-512).
 
+Para permitir ingreso directo (SSO) desde otra aplicación sin pasar por la pantalla de login mediante un JWT `HS256` temporal de un solo uso (`GET` o `POST /api/auth/sso`), configura `SSO_SECRET` en `.env` y entrega la guía [docs/SSO_INTEGRATION.md](docs/SSO_INTEGRATION.md) al equipo de la app de origen.
+
 - `GET /api/health` — Estado de DB, conectividad con WAHA y estado del worker.
 - `GET /api/waha/session` / `POST /api/waha/session/start` / `GET /api/waha/qr` — Control de sesión y QR.
 - `POST /api/batches/parse-file` — Parsea `.xlsx` o `.csv` (multipart `file`).

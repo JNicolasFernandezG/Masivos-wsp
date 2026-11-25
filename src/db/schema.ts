@@ -75,4 +75,12 @@ CREATE TABLE IF NOT EXISTS lid_mappings (
   phone_number TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sso_used_jtis (
+  jti TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sso_used_jtis_expires
+  ON sso_used_jtis (expires_at);
 `;

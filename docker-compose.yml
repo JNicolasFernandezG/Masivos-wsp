@@ -83,6 +83,9 @@ services:
       - BUSINESS_ALLOWED_DAYS=${BUSINESS_ALLOWED_DAYS:-1,2,3,4,5,6}
       - AUTH_REQUIRED=${AUTH_REQUIRED:-true}
       - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
+      - SSO_SECRET=${SSO_SECRET:-}
+      - SSO_MAX_TTL_SECONDS=${SSO_MAX_TTL_SECONDS:-300}
+      - SSO_ALLOWED_ISSUER=${SSO_ALLOWED_ISSUER:-}
       - TZ=${TZ:-America/Argentina/Buenos_Aires}
     ports:
       - "${APP_BIND_HOST:-${CADDY_BIND_HOST:-0.0.0.0}}:${APP_PORT:-${CADDY_PORT:-8084}}:4000"

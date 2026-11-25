@@ -1100,12 +1100,33 @@ $('btn-logout').addEventListener('click', async () => {
   showLoginScreen('');
 });
 
+function consumeSsoErrorFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('sso_error');
+  if (!code) return '';
+
+  window.history.replaceState({}, '', window.location.pathname || '/');
+  switch (code) {
+    case 'expired':
+      return 'El enlace de acceso SSO expiró. Vuelve a abrir la app desde el portal de origen.';
+    case 'used':
+      return 'El enlace de acceso SSO ya fue utilizado. Genera un nuevo acceso desde el portal de origen.';
+    case 'disabled':
+      return 'El acceso SSO no está habilitado en este servidor.';
+    case 'rate_limited':
+      return 'Demasiados intentos de acceso SSO fallidos. Espera unos minutos e intenta nuevamente.';
+    default:
+      return 'El enlace de acceso SSO es inválido. Vuelve a ingresar desde el portal de origen.';
+  }
+}
+
 async function initApp() {
+  const ssoError = consumeSsoErrorFromUrl();
   try {
     const res = await fetch('/api/auth/status');
     const auth = await res.json();
     if (auth.authRequired && !auth.authenticated) {
-      showLoginScreen('');
+      showLoginScreen(ssoError);
       return;
     }
     showWorkspace(Boolean(auth.authRequired));

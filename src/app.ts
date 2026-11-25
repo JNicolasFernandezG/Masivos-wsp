@@ -49,7 +49,9 @@ export function buildApp(options: BuildAppOptions): AppContext {
   app.addHook('onSend', async (_req, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-Frame-Options', 'DENY');
-    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (!reply.getHeader('Referrer-Policy')) {
+      reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    }
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     reply.header('X-Robots-Tag', 'noindex, nofollow');
     reply.header(
@@ -112,7 +114,7 @@ export function buildApp(options: BuildAppOptions): AppContext {
     }
   });
 
-  app.register(createAuthRoutes(config));
+  app.register(createAuthRoutes(config, db));
   app.register(createHealthRoutes({ db, wahaClient, worker, config }));
   app.register(createWahaRoutes({ wahaClient, config }));
   app.register(createWebhookRoutes({ webhookService, config }));

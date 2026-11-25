@@ -57,6 +57,9 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v.toLowerCase() === 'true' || v === '1'),
   ADMIN_API_TOKEN: z.string().default(''),
+  SSO_SECRET: z.string().default(''),
+  SSO_MAX_TTL_SECONDS: z.coerce.number().int().min(10).max(600).default(300),
+  SSO_ALLOWED_ISSUER: z.string().default(''),
 });
 
 export interface AppConfig {
@@ -88,6 +91,9 @@ export interface AppConfig {
   businessAllowedDays: number[];
   authRequired: boolean;
   adminApiToken: string;
+  ssoSecret: string;
+  ssoMaxTtlSeconds: number;
+  ssoAllowedIssuer: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -144,5 +150,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     businessAllowedDays: allowedDays.length > 0 ? allowedDays : [1, 2, 3, 4, 5, 6],
     authRequired: parsed.AUTH_REQUIRED,
     adminApiToken: parsed.ADMIN_API_TOKEN,
+    ssoSecret: parsed.SSO_SECRET.trim(),
+    ssoMaxTtlSeconds: parsed.SSO_MAX_TTL_SECONDS,
+    ssoAllowedIssuer: parsed.SSO_ALLOWED_ISSUER.trim(),
   };
 }
