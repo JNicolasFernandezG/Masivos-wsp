@@ -598,11 +598,27 @@ $('btn-submit-batch').addEventListener('click', async () => {
 });
 
 // --- Cola y Lotes ---
+function resetBatchDetailView() {
+  state.selectedBatchId = null;
+  $('batch-detail-title').textContent = 'Detalle del lote';
+  $('batch-detail-actions').replaceChildren();
+  $('batch-detail-content').replaceChildren(
+    el('p', {
+      className: 'muted',
+      textContent: 'Selecciona un lote para inspeccionar el estado de cada envío.',
+    })
+  );
+}
+
 async function loadBatches() {
   try {
     const data = await apiFetch('/api/batches');
+    const batches = data.batches || [];
     updateWorkerPill(data.worker);
-    renderBatchesList(data.batches || []);
+    if (state.selectedBatchId && !batches.some((b) => b.id === state.selectedBatchId)) {
+      resetBatchDetailView();
+    }
+    renderBatchesList(batches);
     if (state.selectedBatchId) {
       await loadBatchDetail(state.selectedBatchId);
     }
@@ -756,6 +772,32 @@ async function batchAction(batchId, action) {
 
 $('btn-refresh-batches').addEventListener('click', loadBatches);
 
+$('btn-clear-batches').addEventListener('click', async () => {
+  const confirmed = confirm(
+    '¿Eliminar todos los lotes finalizados (completados y cancelados) de la base de datos?\n\nLos lotes pendientes, en proceso o pausados se conservarán y la cuota diaria anti-baneo seguirá respetándose.'
+  );
+  if (!confirmed) return;
+
+  const btn = $('btn-clear-batches');
+  btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/batches/history', { method: 'DELETE' });
+    await loadBatches();
+    if (res.deletedBatches === 0) {
+      showAlert('No había lotes finalizados para limpiar.', 'info');
+    } else {
+      showAlert(
+        `Historial limpiado: se eliminaron ${res.deletedBatches} lote(s) y ${res.deletedMessages} envío(s).`,
+        'ok'
+      );
+    }
+  } catch (err) {
+    showAlert(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // --- Inbox / Mensajes entrantes y respuestas ---
 async function loadConversations() {
   try {
@@ -870,7 +912,43 @@ async function selectConversation(chatId) {
   loadConversations();
 }
 
+function resetChatView() {
+  state.selectedChatId = null;
+  state.unreadInbox = 0;
+  $('inbox-badge').classList.add('hidden');
+  $('chat-title').textContent = 'Historial de mensajes';
+  $('chat-subtitle').textContent =
+    'Selecciona una conversación para ver mensajes y responder.';
+  $('chat-messages').replaceChildren(
+    el('p', { className: 'muted', textContent: 'Sin conversación seleccionada.' })
+  );
+}
+
 $('btn-refresh-inbox').addEventListener('click', loadConversations);
+
+$('btn-clear-messages').addEventListener('click', async () => {
+  const confirmed = confirm(
+    '¿Eliminar todo el historial de mensajes y conversaciones almacenados en la base de datos? Esta acción no se puede deshacer.'
+  );
+  if (!confirmed) return;
+
+  const btn = $('btn-clear-messages');
+  btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/messages/history', { method: 'DELETE' });
+    resetChatView();
+    await loadConversations();
+    if (res.deletedMessages === 0) {
+      showAlert('No había mensajes en el historial para limpiar.', 'info');
+    } else {
+      showAlert(`Se eliminaron ${res.deletedMessages} mensaje(s) del historial.`, 'ok');
+    }
+  } catch (err) {
+    showAlert(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
 $('inbox-search').addEventListener('input', () => {
   loadConversations();
 });
@@ -930,6 +1008,10 @@ function connectSse() {
     }
   });
 
+  es.addEventListener('batches.cleared', () => {
+    loadBatches();
+  });
+
   es.addEventListener('outbound.updated', (ev) => {
     const parsed = JSON.parse(ev.data);
     if (state.selectedBatchId && parsed.data?.batch_id === state.selectedBatchId) {
@@ -961,6 +1043,14 @@ function connectSse() {
       if (state.selectedChatId && parsed.data?.chat_id === state.selectedChatId) {
         selectConversation(state.selectedChatId);
       }
+    }
+  });
+
+  es.addEventListener('messages.cleared', () => {
+    resetChatView();
+    const activeTab = document.querySelector('.tab.active')?.getAttribute('data-tab');
+    if (activeTab === 'inbox') {
+      loadConversations();
     }
   });
 }

@@ -480,4 +480,144 @@ describe('HTTP API integration', () => {
     await app.close();
     db.close();
   });
+
+  it('limpia historial de lotes finalizados (conservando activos) y limpia historial de mensajes', async () => {
+    const adminToken = 'token-limpieza-manual-123';
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      ADMIN_API_TOKEN: adminToken,
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app, batchRepo, messageRepo } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    // Protegido por autenticación
+    const unauthClearBatches = await app.inject({ method: 'DELETE', url: '/api/batches/history' });
+    expect(unauthClearBatches.statusCode).toBe(401);
+    const unauthClearMsgs = await app.inject({ method: 'DELETE', url: '/api/messages/history' });
+    expect(unauthClearMsgs.statusCode).toBe(401);
+
+    // Creamos 1 lote cancelado (finalizado), 1 lote completado hoy y 1 lote pendiente (activo)
+    const cancelledBatch = batchRepo.createBatch({
+      name: 'Cancelado',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01144045541',
+          phoneNormalized: '5491144045541',
+          chatId: '5491144045541@c.us',
+          variables: {},
+          renderedText: 'Hola 1',
+        },
+      ],
+    });
+    batchRepo.cancelBatch(cancelledBatch.id);
+
+    const completedBatch = batchRepo.createBatch({
+      name: 'Completado hoy',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01144045542',
+          phoneNormalized: '5491144045542',
+          chatId: '5491144045542@c.us',
+          variables: {},
+          renderedText: 'Hola 2',
+        },
+      ],
+    });
+    const [completedMsg] = batchRepo.getBatchMessages(completedBatch.id);
+    batchRepo.claimMessageForProcessing(completedMsg.id);
+    batchRepo.markMessageSent(completedMsg.id, 'wamid-1');
+    batchRepo.refreshBatchStatus(completedBatch.id);
+
+    const pendingBatch = batchRepo.createBatch({
+      name: 'Pendiente activo',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01144045543',
+          phoneNormalized: '5491144045543',
+          chatId: '5491144045543@c.us',
+          variables: {},
+          renderedText: 'Hola 3',
+        },
+      ],
+    });
+
+    const clearBatchesRes = await app.inject({
+      method: 'DELETE',
+      url: '/api/batches/history',
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(clearBatchesRes.statusCode).toBe(200);
+    expect(clearBatchesRes.json()).toMatchObject({
+      ok: true,
+      deletedBatches: 2,
+      deletedMessages: 2,
+      remainingBatches: 1,
+      preservedSentToday: 1,
+    });
+
+    const remainingRes = await app.inject({
+      method: 'GET',
+      url: '/api/batches',
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(remainingRes.json().batches).toHaveLength(1);
+    expect(remainingRes.json().batches[0].id).toBe(pendingBatch.id);
+    expect(remainingRes.json().worker.sentToday).toBe(1);
+
+    // Mensajes en bandeja
+    messageRepo.saveMessage({
+      wahaMessageId: 'msg-hist-1',
+      sessionName: 'default',
+      eventType: 'message',
+      direction: 'IN',
+      fromMe: false,
+      chatId: '5491144045541@c.us',
+      rawChatId: '5491144045541@c.us',
+      senderPhone: '5491144045541',
+      senderName: 'Ana',
+      body: 'Hola',
+      messageType: 'chat',
+      hasMedia: false,
+      ack: null,
+      timestampUnix: 1763481000,
+      payloadJson: '{}',
+    });
+
+    const clearMsgsRes = await app.inject({
+      method: 'DELETE',
+      url: '/api/messages/history',
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(clearMsgsRes.statusCode).toBe(200);
+    expect(clearMsgsRes.json()).toMatchObject({
+      ok: true,
+      deletedMessages: 1,
+    });
+
+    const convAfterRes = await app.inject({
+      method: 'GET',
+      url: '/api/conversations',
+      headers: { 'x-admin-token': adminToken },
+    });
+    expect(convAfterRes.json().conversations).toEqual([]);
+
+    await app.close();
+    db.close();
+  });
 });

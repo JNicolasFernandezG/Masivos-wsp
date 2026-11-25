@@ -1,4 +1,4 @@
-import { toPlainRow, toPlainRows, type SqliteDb } from '../db/database.js';
+import { compactDatabase, toPlainRow, toPlainRows, type SqliteDb } from '../db/database.js';
 
 export type BatchStatus =
   | 'PENDIENTE'
@@ -67,6 +67,16 @@ export interface CreateBatchInput {
   template: string | null;
   items: NewOutboundItem[];
 }
+
+export interface ClearFinishedBatchesResult {
+  deletedBatches: number;
+  deletedMessages: number;
+  remainingBatches: number;
+  preservedSentToday: number;
+}
+
+const STATE_DAILY_SENT_DATE = 'daily_sent_date';
+const STATE_DAILY_SENT_PRESERVED = 'daily_sent_preserved';
 
 export class BatchRepository {
   constructor(private readonly db: SqliteDb) {}
@@ -458,5 +468,82 @@ export class BatchRepository {
       this.db.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  getPreservedDailySentCount(dateKey: string): number {
+    const storedDate = this.getWorkerState(STATE_DAILY_SENT_DATE);
+    if (storedDate !== dateKey) {
+      return 0;
+    }
+    const raw = this.getWorkerState(STATE_DAILY_SENT_PRESERVED);
+    const num = raw ? Number(raw) : 0;
+    return Number.isFinite(num) && num > 0 ? Math.floor(num) : 0;
+  }
+
+  clearFinishedBatches(dateKey: string, startOfTodayIso: string): ClearFinishedBatchesResult {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const deletableCondition = `
+        batches.status IN ('COMPLETADO', 'COMPLETADO_CON_ERRORES', 'CANCELADO')
+        AND NOT EXISTS (
+          SELECT 1 FROM outbound_messages m2
+          WHERE m2.batch_id = batches.id AND m2.status IN ('PENDIENTE', 'PROCESANDO')
+        )
+      `;
+
+      const deletedMessagesRow = this.db
+        .prepare(
+          `SELECT COUNT(*) AS cnt
+           FROM outbound_messages m
+           INNER JOIN batches ON batches.id = m.batch_id
+           WHERE ${deletableCondition}`
+        )
+        .get() as { cnt?: number } | undefined;
+      const deletedMessages = Number(deletedMessagesRow?.cnt ?? 0);
+
+      const deletedSentTodayRow = this.db
+        .prepare(
+          `SELECT COUNT(*) AS cnt
+           FROM outbound_messages m
+           INNER JOIN batches ON batches.id = m.batch_id
+           WHERE ${deletableCondition}
+             AND m.status = 'ENVIADO'
+             AND m.sent_at IS NOT NULL
+             AND m.sent_at >= ?`
+        )
+        .get(startOfTodayIso) as { cnt?: number } | undefined;
+      const deletedSentToday = Number(deletedSentTodayRow?.cnt ?? 0);
+
+      if (deletedSentToday > 0) {
+        const existingPreserved = this.getPreservedDailySentCount(dateKey);
+        this.setWorkerState(STATE_DAILY_SENT_DATE, dateKey);
+        this.setWorkerState(STATE_DAILY_SENT_PRESERVED, String(existingPreserved + deletedSentToday));
+      }
+
+      const deletedBatchesRes = this.db
+        .prepare(`DELETE FROM batches WHERE ${deletableCondition}`)
+        .run();
+      const deletedBatches = Number(deletedBatchesRes.changes);
+
+      const remainingRow = this.db
+        .prepare('SELECT COUNT(*) AS cnt FROM batches')
+        .get() as { cnt?: number } | undefined;
+      const remainingBatches = Number(remainingRow?.cnt ?? 0);
+
+      this.db.exec('COMMIT');
+      return {
+        deletedBatches,
+        deletedMessages,
+        remainingBatches,
+        preservedSentToday: deletedSentToday,
+      };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  compact(): boolean {
+    return compactDatabase(this.db);
   }
 }

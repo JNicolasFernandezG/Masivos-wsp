@@ -3,6 +3,7 @@ import type { AppConfig } from '../config.js';
 import type { BatchRepository, OutboundMessageRecord } from '../repositories/batchRepository.js';
 import {
   checkBusinessHours,
+  getLocalClock,
   getNextBusinessDayStart,
   getStartOfLocalDayUtc,
 } from '../services/businessHours.js';
@@ -101,8 +102,13 @@ export class BatchWorker {
   }
 
   private getSentTodayCount(nowMs: number): number {
-    const startOfToday = getStartOfLocalDayUtc(new Date(nowMs), this.deps.config.timezone);
-    return this.deps.batchRepo.countSentSince(startOfToday.toISOString());
+    const nowDate = new Date(nowMs);
+    const clock = getLocalClock(nowDate, this.deps.config.timezone);
+    const startOfToday = getStartOfLocalDayUtc(nowDate, this.deps.config.timezone);
+    return (
+      this.deps.batchRepo.countSentSince(startOfToday.toISOString()) +
+      this.deps.batchRepo.getPreservedDailySentCount(clock.dateKey)
+    );
   }
 
   private getConsecutiveChunkCount(): number {

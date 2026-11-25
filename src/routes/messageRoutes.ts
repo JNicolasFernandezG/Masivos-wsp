@@ -135,5 +135,20 @@ export function createMessageRoutes(deps: MessageRouteDeps): FastifyPluginAsync 
         });
       }
     });
+
+    fastify.delete('/api/messages/history', async () => {
+      const result = deps.messageRepo.clearAllMessages();
+      const compacted = result.deletedMessages > 0 ? deps.messageRepo.compact() : false;
+
+      if (result.deletedMessages > 0) {
+        deps.eventBus.emit('messages.cleared', result);
+      }
+
+      return {
+        ok: true,
+        ...result,
+        compacted,
+      };
+    });
   };
 }

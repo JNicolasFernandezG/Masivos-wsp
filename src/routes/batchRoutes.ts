@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../config.js';
 import type { BatchRepository } from '../repositories/batchRepository.js';
 import { prepareBatchPreview } from '../services/batchService.js';
+import { getLocalClock, getStartOfLocalDayUtc } from '../services/businessHours.js';
 import type { EventBus } from '../services/eventBus.js';
 import { parseSpreadsheetBuffer } from '../services/fileParser.js';
 import type { BatchWorker } from '../worker/batchWorker.js';
@@ -265,6 +266,31 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
       if (!batch) return reply.status(404).send({ error: 'Lote no encontrado.' });
       deps.eventBus.emit('batch.updated', batch);
       return { batch };
+    });
+
+    fastify.delete('/api/batches/history', async () => {
+      const now = new Date();
+      const clock = getLocalClock(now, deps.config.timezone);
+      const startOfToday = getStartOfLocalDayUtc(now, deps.config.timezone);
+      const result = deps.batchRepo.clearFinishedBatches(
+        clock.dateKey,
+        startOfToday.toISOString()
+      );
+      const compacted =
+        result.deletedBatches > 0 && !deps.worker.getStatus().busy
+          ? deps.batchRepo.compact()
+          : false;
+
+      if (result.deletedBatches > 0) {
+        deps.eventBus.emit('batches.cleared', result);
+        deps.eventBus.emit('worker.status', deps.worker.getStatus());
+      }
+
+      return {
+        ok: true,
+        ...result,
+        compacted,
+      };
     });
   };
 }

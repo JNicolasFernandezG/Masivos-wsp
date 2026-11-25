@@ -1,4 +1,4 @@
-import { toPlainRow, toPlainRows, type SqliteDb } from '../db/database.js';
+import { compactDatabase, toPlainRow, toPlainRows, type SqliteDb } from '../db/database.js';
 
 export type MessageDirection = 'IN' | 'OUT';
 
@@ -175,5 +175,14 @@ export class MessageRepository {
       .all(limit) as Record<string, unknown>[];
 
     return toPlainRows(rows) as unknown as ConversationSummary[];
+  }
+
+  clearAllMessages(): { deletedMessages: number } {
+    const res = this.db.prepare('DELETE FROM messages').run();
+    return { deletedMessages: Number(res.changes) };
+  }
+
+  compact(): boolean {
+    return compactDatabase(this.db);
   }
 }

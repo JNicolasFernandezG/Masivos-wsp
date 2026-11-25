@@ -2,9 +2,11 @@ import { EventEmitter } from 'node:events';
 
 export type AppEventType =
   | 'batch.updated'
+  | 'batches.cleared'
   | 'outbound.updated'
   | 'message.received'
   | 'message.sent'
+  | 'messages.cleared'
   | 'session.status'
   | 'worker.status';
 

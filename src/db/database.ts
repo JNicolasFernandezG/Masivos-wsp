@@ -32,6 +32,21 @@ export function createDatabase(databasePath: string): DatabaseSync {
   return db;
 }
 
+export function compactDatabase(db: DatabaseSync): boolean {
+  try {
+    const dbs = db.prepare('PRAGMA database_list').all() as Array<{ name?: string; file?: string }>;
+    const mainDb = dbs.find((d) => d.name === 'main');
+    if (!mainDb?.file) {
+      return false;
+    }
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    db.exec('VACUUM;');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Node's node:sqlite returns null-prototype row objects; copying into a standard
  * object ensures consistent serialization and prototype behavior.

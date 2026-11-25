@@ -99,7 +99,9 @@ Si `ADMIN_API_TOKEN` está definido en `.env`, el panel web solicita esa clave e
 - `GET /api/batches/sample.xlsx` — Descarga de plantilla modelo vacía (`telefono`, `nombre`, `observacion`).
 - `GET /api/batches` / `GET /api/batches/:id` — Listado y detalle de envíos.
 - `POST /api/batches/:id/{pause|resume|cancel|retry-failed}` — Control operativo del lote.
+- `DELETE /api/batches/history` — Limpia lotes finalizados (`COMPLETADO`, `COMPLETADO_CON_ERRORES`, `CANCELADO`) preservando la cuota diaria anti-baneo y compactando SQLite (`VACUUM`).
 - `GET /api/conversations` / `GET /api/messages` — Historial de mensajes recibidos y enviados.
+- `DELETE /api/messages/history` — Limpia el historial de mensajes/conversaciones almacenados y compacta SQLite (`VACUUM`).
 - `POST /api/messages/reply` — Envía respuesta puntual `{ "chatId": "5491112345678@c.us", "text": "..." }`.
 - `POST /api/webhooks/waha` — Receptor de eventos WAHA (`message`, `message.any`, `session.status`).
 - `GET /api/events` — Stream SSE para actualizaciones en tiempo real.

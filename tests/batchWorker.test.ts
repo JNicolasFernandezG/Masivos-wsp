@@ -3,6 +3,7 @@ import { loadConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/database.js';
 import { BatchRepository } from '../src/repositories/batchRepository.js';
 import { EventBus } from '../src/services/eventBus.js';
+import { getLocalClock, getStartOfLocalDayUtc } from '../src/services/businessHours.js';
 import type { WahaClient } from '../src/services/wahaClient.js';
 import { BatchWorker } from '../src/worker/batchWorker.js';
 
@@ -316,6 +317,84 @@ describe('BatchWorker', () => {
 
     batchRepo.resumeBatch(batch.id);
     expect(batchRepo.findNextPendingMessage()?.id).toBe(msg.id);
+    db.close();
+  });
+
+  it('conserva la cuota diaria anti-baneo al limpiar lotes finalizados del día', async () => {
+    const db = createDatabase(':memory:');
+    const batchRepo = new BatchRepository(db);
+    const eventBus = new EventBus();
+    const config = makeConfig({
+      BUSINESS_HOURS_ENABLED: 'false',
+      WORKER_MIN_DELAY_MS: '0',
+      WORKER_MAX_DELAY_MS: '0',
+      WORKER_CHUNK_SIZE: '10',
+      WORKER_CHUNK_PAUSE_MIN_MS: '0',
+      WORKER_CHUNK_PAUSE_MAX_MS: '0',
+      WORKER_DAILY_LIMIT: '2',
+    });
+
+    const sendText = vi.fn().mockResolvedValue({ id: 'wamid-quota', raw: {} });
+    const wahaClient = makeMockWaha({ sendText });
+    const worker = new BatchWorker({
+      batchRepo,
+      wahaClient,
+      eventBus,
+      config,
+      sleepFn: async () => undefined,
+    });
+
+    batchRepo.createBatch({
+      name: 'Lote completado hoy',
+      source: 'api',
+      template: null,
+      items: [1, 2].map((n) => ({
+        chunkIndex: 1,
+        recipientRaw: `0114404554${n}`,
+        phoneNormalized: `549114404554${n}`,
+        chatId: `549114404554${n}@c.us`,
+        variables: {},
+        renderedText: `Mensaje ${n}`,
+      })),
+    });
+
+    expect(await worker.processSingleTick()).toBe(true);
+    expect(await worker.processSingleTick()).toBe(true);
+    expect(worker.getStatus().sentToday).toBe(2);
+
+    const now = new Date();
+    const clock = getLocalClock(now, config.timezone);
+    const startOfToday = getStartOfLocalDayUtc(now, config.timezone);
+    const cleared = batchRepo.clearFinishedBatches(clock.dateKey, startOfToday.toISOString());
+
+    expect(cleared.deletedBatches).toBe(1);
+    expect(cleared.deletedMessages).toBe(2);
+    expect(cleared.remainingBatches).toBe(0);
+    expect(cleared.preservedSentToday).toBe(2);
+
+    // Aunque ya no haya lotes en SQLite, la cuota diaria sigue en 2/2
+    expect(worker.getStatus().sentToday).toBe(2);
+
+    // Si se carga un lote nuevo hoy, el worker bloquea por tope diario
+    batchRepo.createBatch({
+      name: 'Lote extra mismo día',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01144045549',
+          phoneNormalized: '5491144045549',
+          chatId: '5491144045549@c.us',
+          variables: {},
+          renderedText: 'No debería salir hoy',
+        },
+      ],
+    });
+
+    expect(await worker.processSingleTick()).toBe(false);
+    expect(worker.getStatus().pauseReason).toBe('DAILY_LIMIT_REACHED');
+    expect(sendText).toHaveBeenCalledTimes(2);
     db.close();
   });
 });
