@@ -812,4 +812,55 @@ describe('HTTP API integration', () => {
     await app.close();
     db.close();
   });
+
+  it('pagina el listado de lotes con page y limit manteniendo orden descendente', async () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const { app, batchRepo } = buildApp({
+      config,
+      db,
+      wahaClient: createMockWaha(),
+      logger: false,
+    });
+
+    for (let i = 1; i <= 5; i += 1) {
+      batchRepo.createBatch({
+        name: `Lote ${i}`,
+        source: 'api',
+        template: null,
+        items: [
+          {
+            chunkIndex: 1,
+            recipientRaw: `0114404554${i}`,
+            phoneNormalized: `549114404554${i}`,
+            chatId: `549114404554${i}@c.us`,
+            variables: {},
+            renderedText: `Mensaje ${i}`,
+          },
+        ],
+      });
+    }
+
+    const page1 = await app.inject({ method: 'GET', url: '/api/batches?page=1&limit=2' });
+    expect(page1.statusCode).toBe(200);
+    expect(page1.json().pagination).toEqual({ page: 1, limit: 2, total: 5, totalPages: 3 });
+    expect(page1.json().batches.map((b: { name: string }) => b.name)).toEqual(['Lote 5', 'Lote 4']);
+
+    const page2 = await app.inject({ method: 'GET', url: '/api/batches?page=2&limit=2' });
+    expect(page2.statusCode).toBe(200);
+    expect(page2.json().pagination).toEqual({ page: 2, limit: 2, total: 5, totalPages: 3 });
+    expect(page2.json().batches.map((b: { name: string }) => b.name)).toEqual(['Lote 3', 'Lote 2']);
+
+    const page3 = await app.inject({ method: 'GET', url: '/api/batches?page=3&limit=2' });
+    expect(page3.statusCode).toBe(200);
+    expect(page3.json().pagination).toEqual({ page: 3, limit: 2, total: 5, totalPages: 3 });
+    expect(page3.json().batches.map((b: { name: string }) => b.name)).toEqual(['Lote 1']);
+
+    await app.close();
+    db.close();
+  });
 });

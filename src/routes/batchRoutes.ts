@@ -102,10 +102,29 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
         .send(buffer);
     });
 
-    fastify.get('/api/batches', async () => {
+    fastify.get('/api/batches', async (req) => {
+      const query = (req.query ?? {}) as { page?: string; limit?: string };
+      const parsedLimit = query.limit ? Number(query.limit) : 50;
+      const limit = Number.isFinite(parsedLimit)
+        ? Math.min(Math.max(Math.floor(parsedLimit), 1), 100)
+        : 50;
+      const parsedPage = query.page ? Number(query.page) : 1;
+      const requestedPage = Number.isFinite(parsedPage) ? Math.max(Math.floor(parsedPage), 1) : 1;
+
+      const total = deps.batchRepo.countBatches();
+      const totalPages = Math.max(1, Math.ceil(total / limit));
+      const page = Math.min(requestedPage, totalPages);
+      const offset = (page - 1) * limit;
+
       return {
-        batches: deps.batchRepo.listBatches(),
+        batches: deps.batchRepo.listBatches(limit, offset),
         worker: deps.worker.getStatus(),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+        },
       };
     });
 

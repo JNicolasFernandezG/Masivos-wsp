@@ -2,6 +2,9 @@ const state = {
   authRequired: false,
   authenticated: false,
   selectedBatchId: null,
+  batchesPage: 1,
+  batchesLimit: 10,
+  batchesPagination: null,
   selectedChatId: null,
   unreadInbox: 0,
   parsedRows: [],
@@ -590,8 +593,9 @@ $('btn-submit-batch').addEventListener('click', async () => {
 
     showAlert(`Lote #${res.batch.id} ("${res.batch.name}") encolado con ${res.batch.total_count} mensajes.`, 'ok');
     state.selectedBatchId = res.batch.id;
+    state.batchesPage = 1;
     document.querySelector('.tab[data-tab="batches"]').click();
-    await loadBatches();
+    await loadBatches(1);
   } catch (err) {
     showAlert(err.message, 'err');
   }
@@ -610,15 +614,105 @@ function resetBatchDetailView() {
   );
 }
 
-async function loadBatches() {
+function buildPageNumbers(currentPage, totalPages) {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const pages = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  if (start > 2) pages.push('...');
+  for (let p = start; p <= end; p += 1) {
+    pages.push(p);
+  }
+  if (end < totalPages - 1) pages.push('...');
+  pages.push(totalPages);
+  return pages;
+}
+
+function renderBatchesPagination(pagination) {
+  const container = $('batches-pagination');
+  if (!container) return;
+  if (!pagination || pagination.total === 0 || pagination.totalPages <= 1) {
+    container.classList.add('hidden');
+    container.replaceChildren();
+    return;
+  }
+
+  const { page, totalPages, total } = pagination;
+  const buttons = el('div', { className: 'pagination-buttons' });
+
+  buttons.appendChild(
+    el('button', {
+      type: 'button',
+      className: 'page-btn',
+      textContent: '‹',
+      title: 'Página anterior',
+      disabled: page <= 1 ? 'disabled' : null,
+      onclick: () => loadBatches(page - 1),
+    })
+  );
+
+  for (const item of buildPageNumbers(page, totalPages)) {
+    if (item === '...') {
+      buttons.appendChild(el('span', { className: 'page-ellipsis', textContent: '…' }));
+    } else {
+      buttons.appendChild(
+        el('button', {
+          type: 'button',
+          className: `page-btn ${item === page ? 'active' : ''}`,
+          textContent: String(item),
+          onclick: () => {
+            if (item !== page) loadBatches(item);
+          },
+        })
+      );
+    }
+  }
+
+  buttons.appendChild(
+    el('button', {
+      type: 'button',
+      className: 'page-btn',
+      textContent: '›',
+      title: 'Página siguiente',
+      disabled: page >= totalPages ? 'disabled' : null,
+      onclick: () => loadBatches(page + 1),
+    })
+  );
+
+  container.replaceChildren(
+    el('span', {
+      className: 'pagination-info',
+      textContent: `Página ${page} de ${totalPages} · ${total} lote(s)`,
+    }),
+    buttons
+  );
+  container.classList.remove('hidden');
+}
+
+async function loadBatches(requestedPage = state.batchesPage) {
   try {
-    const data = await apiFetch('/api/batches');
+    const targetPage = Math.max(1, Number(requestedPage) || 1);
+    const data = await apiFetch(
+      `/api/batches?page=${targetPage}&limit=${state.batchesLimit}`
+    );
     const batches = data.batches || [];
+    const pagination = data.pagination || {
+      page: 1,
+      limit: state.batchesLimit,
+      total: batches.length,
+      totalPages: 1,
+    };
+    state.batchesPage = pagination.page;
+    state.batchesPagination = pagination;
+
     updateWorkerPill(data.worker);
-    if (state.selectedBatchId && !batches.some((b) => b.id === state.selectedBatchId)) {
+    if (pagination.total === 0 && state.selectedBatchId) {
       resetBatchDetailView();
     }
     renderBatchesList(batches);
+    renderBatchesPagination(pagination);
     if (state.selectedBatchId) {
       await loadBatchDetail(state.selectedBatchId);
     }
@@ -770,7 +864,7 @@ async function batchAction(batchId, action) {
   }
 }
 
-$('btn-refresh-batches').addEventListener('click', loadBatches);
+$('btn-refresh-batches').addEventListener('click', () => loadBatches(state.batchesPage));
 
 $('btn-clear-batches').addEventListener('click', async () => {
   const confirmed = confirm(
@@ -782,7 +876,8 @@ $('btn-clear-batches').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const res = await apiFetch('/api/batches/history', { method: 'DELETE' });
-    await loadBatches();
+    resetBatchDetailView();
+    await loadBatches(1);
     if (res.deletedBatches === 0) {
       showAlert('No había lotes finalizados para limpiar.', 'info');
     } else {
@@ -1009,7 +1104,8 @@ function connectSse() {
   });
 
   es.addEventListener('batches.cleared', () => {
-    loadBatches();
+    resetBatchDetailView();
+    loadBatches(1);
   });
 
   es.addEventListener('outbound.updated', (ev) => {

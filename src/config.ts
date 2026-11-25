@@ -32,7 +32,7 @@ const envSchema = z.object({
   WORKER_CHUNK_PAUSE_MAX_MS: z.coerce.number().int().min(0).default(3600000),
   WORKER_DAILY_LIMIT: z.coerce.number().int().min(1).default(125),
   WORKER_SUGGESTED_BATCH_SIZE: z.coerce.number().int().min(1).default(25),
-  WORKER_MAX_BATCH_SIZE: z.coerce.number().int().min(1).default(1000),
+  WORKER_MAX_BATCH_SIZE: z.coerce.number().int().min(1).default(4000),
   WORKER_ENABLED: z
     .string()
     .default('true')

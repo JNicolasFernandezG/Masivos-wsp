@@ -132,7 +132,14 @@ export class BatchRepository {
     }
   }
 
-  listBatches(limit = 50): BatchWithStats[] {
+  countBatches(): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS cnt FROM batches')
+      .get() as { cnt?: number } | undefined;
+    return Number(row?.cnt ?? 0);
+  }
+
+  listBatches(limit = 50, offset = 0): BatchWithStats[] {
     const rows = this.db
       .prepare(
         `SELECT
@@ -146,9 +153,9 @@ export class BatchRepository {
         LEFT JOIN outbound_messages m ON m.batch_id = b.id
         GROUP BY b.id
         ORDER BY b.id DESC
-        LIMIT ?`
+        LIMIT ? OFFSET ?`
       )
-      .all(limit) as Record<string, unknown>[];
+      .all(limit, offset) as Record<string, unknown>[];
 
     return toPlainRows(rows) as unknown as BatchWithStats[];
   }
