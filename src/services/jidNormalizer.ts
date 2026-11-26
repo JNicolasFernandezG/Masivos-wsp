@@ -204,6 +204,34 @@ function normalizeArgentinaDigits(
     };
   }
 
+  if (local.length === 11) {
+    // Typo: 111 + 8-digit AMBA subscriber (e.g. 11126861937 or 011126861937 -> 5491126861937)
+    const ambaExtra1 = local.match(/^111(\d{8})$/);
+    if (ambaExtra1) {
+      const finalDigits = `54911${ambaExtra1[1]}`;
+      return {
+        ok: true,
+        chatId: `${finalDigits}@c.us`,
+        phoneNormalized: finalDigits,
+        kind: 'user',
+        warning: 'Se corrigió prefijo 111 duplicado → 54911.',
+      };
+    }
+
+    // Missing country code 54 before mobile 9 + 10-digit Argentine number (e.g. 911..., 9223...)
+    const missing54 = local.match(/^9((?:11|[23]\d)\d{8})$/);
+    if (missing54) {
+      const finalDigits = `549${missing54[1]}`;
+      return {
+        ok: true,
+        chatId: `${finalDigits}@c.us`,
+        phoneNormalized: finalDigits,
+        kind: 'user',
+        warning: 'Se agregó código país 54 al prefijo móvil 9.',
+      };
+    }
+  }
+
   if (local.length === 12) {
     const stripped = stripArgentinaMobile15(local);
     if (stripped) {
@@ -218,8 +246,14 @@ function normalizeArgentinaDigits(
     }
   }
 
-  // Allow explicit international E.164 numbers (e.g. +5511999998888, 56912345678)
-  if (!startedWithZero && (explicitlyInternational || (digits.length >= 11 && digits.length <= 15))) {
+  // Allow explicit international E.164 numbers (e.g. +5511999998888, 56912345678).
+  // Exclude malformed Argentine prefixes starting with 11 or 15 (no E.164 country code starts with 11/15).
+  const looksLikeMalformedArPrefix = !explicitlyInternational && /^(11|15)/.test(digits);
+  if (
+    !startedWithZero &&
+    !looksLikeMalformedArPrefix &&
+    (explicitlyInternational || (digits.length >= 11 && digits.length <= 15))
+  ) {
     return {
       ok: true,
       chatId: `${digits}@c.us`,

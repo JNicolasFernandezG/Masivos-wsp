@@ -108,4 +108,27 @@ describe('jidNormalizer', () => {
     const dup11 = normalizeOutboundRecipient('tel:0111140577277', '549');
     expect(dup11.ok && dup11.warning).toContain('01111');
   });
+
+  it('corrige prefijos argentinos de 11 dígitos (111... y 9...) y rechaza 11 dígitos malformados sin 549', () => {
+    const extraOne = normalizeOutboundRecipient('11126861937', '549');
+    expect(extraOne).toEqual({
+      ok: true,
+      chatId: '5491126861937@c.us',
+      phoneNormalized: '5491126861937',
+      kind: 'user',
+      warning: 'Se corrigió prefijo 111 duplicado → 54911.',
+    });
+
+    const extraOneZero = normalizeOutboundRecipient('011126861937', '549');
+    expect(extraOneZero.ok && extraOneZero.chatId).toBe('5491126861937@c.us');
+
+    const missing54Amba = normalizeOutboundRecipient('91144045549', '549');
+    expect(missing54Amba.ok && missing54Amba.chatId).toBe('5491144045549@c.us');
+
+    const missing54Interior = normalizeOutboundRecipient('92234810757', '549');
+    expect(missing54Interior.ok && missing54Interior.chatId).toBe('5492234810757@c.us');
+
+    // 11 dígitos empezando con 11 que no son 111... no debe pasar como internacional sin 549
+    expect(normalizeOutboundRecipient('11226861937', '549').ok).toBe(false);
+  });
 });

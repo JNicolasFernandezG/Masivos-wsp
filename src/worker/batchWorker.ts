@@ -71,6 +71,14 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function formatSendError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : 'Error desconocido enviando mensaje.';
+  if (/recipient is not on whatsapp|no lid found/i.test(raw)) {
+    return 'Número no registrado en WhatsApp (sin cuenta activa).';
+  }
+  return raw;
+}
+
 function defaultRandomInt(min: number, maxInclusive: number): number {
   if (maxInclusive <= min) return min;
   return crypto.randomInt(min, maxInclusive + 1);
@@ -341,7 +349,7 @@ export class BatchWorker {
       this.scheduleAfterSend(true);
       this.deps.eventBus.emit('outbound.updated', updated);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Error desconocido enviando mensaje.';
+      const errMsg = formatSendError(err);
       this.lastError = errMsg;
       const updated = this.deps.batchRepo.markMessageError(claimed.id, errMsg);
       this.lastSentAtMs = this.now();

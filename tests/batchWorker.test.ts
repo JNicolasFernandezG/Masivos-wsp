@@ -53,7 +53,11 @@ describe('BatchWorker', () => {
     const sendText = vi
       .fn()
       .mockResolvedValueOnce({ id: 'wamid-1', raw: {} })
-      .mockRejectedValueOnce(new Error('Número inválido en WhatsApp'));
+      .mockRejectedValueOnce(
+        new Error(
+          'WAHA POST /api/sendText respondió 500: {"exception":{"message":"2 UNKNOWN: recipient is not on WhatsApp: no LID found for 5491122222222@s.whatsapp.net from server"}}'
+        )
+      );
 
     const wahaClient = makeMockWaha({ sendText });
 
@@ -121,7 +125,7 @@ describe('BatchWorker', () => {
     expect(messages[0].status).toBe('ENVIADO');
     expect(messages[0].waha_message_id).toBe('wamid-1');
     expect(messages[1].status).toBe('ERROR');
-    expect(messages[1].error_message).toContain('Número inválido');
+    expect(messages[1].error_message).toBe('Número no registrado en WhatsApp (sin cuenta activa).');
 
     const idle = await worker.processSingleTick();
     expect(idle).toBe(false);
