@@ -81,7 +81,9 @@ export async function buildSampleWorkbookBuffer(): Promise<Buffer> {
 
   ws.columns = [
     { header: 'telefono', key: 'telefono', width: 20, style: { numFmt: '@' } },
-    { header: 'nombre', key: 'nombre', width: 24, style: { numFmt: '@' } },
+    { header: 'documento', key: 'documento', width: 16, style: { numFmt: '@' } },
+    { header: 'apellido', key: 'apellido', width: 20, style: { numFmt: '@' } },
+    { header: 'nombre', key: 'nombre', width: 20, style: { numFmt: '@' } },
     { header: 'observacion', key: 'observacion', width: 32, style: { numFmt: '@' } },
   ];
   ws.getRow(1).font = { bold: true };

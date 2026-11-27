@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeMessageVariety,
   extractTemplateVariables,
+  pickRandomTemplateVariant,
   renderTemplate,
+  splitTemplateVariants,
 } from '../src/services/templateRenderer.js';
 
 describe('templateRenderer', () => {
@@ -34,5 +36,23 @@ describe('templateRenderer', () => {
     expect(analyzeMessageVariety(['Hola', 'Hola']).allIdentical).toBe(true);
     expect(analyzeMessageVariety(['Hola Ana', 'Hola Luis']).allIdentical).toBe(false);
     expect(analyzeMessageVariety(['Único']).allIdentical).toBe(false);
+  });
+
+  it('divide variantes por --- y alterna aleatoriamente sin repetir la variante inmediatamente anterior', () => {
+    const raw = 'Variante 1 {{nombre}}\n---\nVariante 2 {{apellido}}\n  ---  \nVariante 3 {{documento}}';
+    const variants = splitTemplateVariants(raw);
+    expect(variants).toEqual([
+      'Variante 1 {{nombre}}',
+      'Variante 2 {{apellido}}',
+      'Variante 3 {{documento}}',
+    ]);
+
+    let lastIdx: number | null = null;
+    for (let i = 0; i < 20; i += 1) {
+      const picked = pickRandomTemplateVariant(variants, lastIdx);
+      expect(picked.index).not.toBe(lastIdx);
+      expect(variants).toContain(picked.variant);
+      lastIdx = picked.index;
+    }
   });
 });

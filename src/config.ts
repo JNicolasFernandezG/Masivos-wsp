@@ -1,8 +1,20 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
-export const FALLBACK_DEFAULT_MESSAGE_TEMPLATE =
-  'Usted, {{nombre}} registra deuda con Asistodo, regularice enviando un mensaje de whatsapp al 1176560109';
+export const DEFAULT_MESSAGE_VARIANTS = [
+  'Hola {{nombre}} {{apellido}} (Doc. {{documento}}), nos comunicamos de Asistodo para informarte que registrás un saldo pendiente. Podés regularizar tu situación escribiéndonos por WhatsApp al 1176560109.',
+  'Buen día {{nombre}} {{apellido}} (Doc. {{documento}}), te contactamos desde Asistodo porque figura una deuda pendiente en tu cuenta. Para regularizarla, envianos un mensaje de WhatsApp al 1176560109.',
+  'Estimado/a {{nombre}} {{apellido}} (Doc. {{documento}}), desde Asistodo te recordamos que contás con un saldo pendiente de pago. Comunicate por WhatsApp al 1176560109 para coordinar la regularización.',
+  'Hola {{nombre}} {{apellido}} (Doc. {{documento}}), te escribimos del área de cobranzas de Asistodo. En nuestros registros figura una deuda pendiente; para regularizarla podés contactarte al WhatsApp 1176560109.',
+  '{{nombre}} {{apellido}} (Doc. {{documento}}), te informamos desde Asistodo que actualmente registrás un pago pendiente. Para resolverlo, por favor escribinos por WhatsApp al 1176560109.',
+  'Hola {{nombre}} {{apellido}} (Doc. {{documento}}), somos de Asistodo. Queremos avisarte que tenés un saldo pendiente en tu cuenta y que podés regularizarlo enviando un WhatsApp al 1176560109.',
+  'Estimado/a {{nombre}} {{apellido}} (Doc. {{documento}}), registramos una deuda pendiente con Asistodo. Para ver opciones de regularización, te pedimos que nos escribas por WhatsApp al 1176560109.',
+  'Hola {{nombre}} {{apellido}} (Doc. {{documento}}), te recordamos desde Asistodo que figura un importe pendiente en tu cuenta. Podés regularizar tu situación comunicándote al 1176560109 por WhatsApp.',
+  'Buen día {{nombre}} {{apellido}} (Doc. {{documento}}), nos ponemos en contacto desde Asistodo por un saldo pendiente registrado a tu nombre. Escribinos por WhatsApp al 1176560109 para regularizarlo.',
+  'Hola {{nombre}} {{apellido}} (Doc. {{documento}}), desde Asistodo te avisamos que tu cuenta presenta deuda pendiente. Para regularizarla, enviá un mensaje de WhatsApp al 1176560109.',
+];
+
+export const FALLBACK_DEFAULT_MESSAGE_TEMPLATE = DEFAULT_MESSAGE_VARIANTS.join('\n---\n');
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -18,11 +30,7 @@ const envSchema = z.object({
   WAHA_TIMEOUT_MS: z.coerce.number().int().min(5000).default(60000),
 
   DEFAULT_COUNTRY_CODE: z.string().default('549'),
-  DEFAULT_MESSAGE_TEMPLATE: z
-    .string()
-    .default(
-      'Usted, {{nombre}} registra deuda con Asistodo, regularice enviando un mensaje de whatsapp al 1176560109'
-    ),
+  DEFAULT_MESSAGE_TEMPLATE: z.string().default(FALLBACK_DEFAULT_MESSAGE_TEMPLATE),
 
   WORKER_MIN_DELAY_MS: z.coerce.number().int().min(0).default(20000),
   WORKER_MAX_DELAY_MS: z.coerce.number().int().min(0).default(60000),

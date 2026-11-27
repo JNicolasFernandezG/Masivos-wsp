@@ -108,9 +108,27 @@ describe('HTTP API integration', () => {
       payload: {
         name: 'Deudas Asistodo',
         rows: [
-          { TELEFONO: 'tel:01144045549', NOMBRE: 'Ana Pérez', OBSERVACION: 'Aviso 1' },
-          { TELEFONO: 'tel:0239615545631', NOMBRE: 'Carlos Gómez', OBSERVACION: '' },
-          { TELEFONO: '0239615545631', NOMBRE: 'Carlos Gómez', OBSERVACION: 'Duplicado' },
+          {
+            TELEFONO: 'tel:01144045549',
+            DOCUMENTO: '30111222',
+            APELLIDO: 'Pérez',
+            NOMBRE: 'Ana',
+            OBSERVACION: 'Aviso 1',
+          },
+          {
+            TELEFONO: 'tel:0239615545631',
+            DOCUMENTO: '28444555',
+            APELLIDO: 'Gómez',
+            NOMBRE: 'Carlos',
+            OBSERVACION: '',
+          },
+          {
+            TELEFONO: '0239615545631',
+            DOCUMENTO: '28444555',
+            APELLIDO: 'Gómez',
+            NOMBRE: 'Carlos',
+            OBSERVACION: 'Duplicado',
+          },
         ],
       },
     });
@@ -125,9 +143,11 @@ describe('HTTP API integration', () => {
       headers: { 'x-admin-token': adminToken },
     });
     expect(detailRes.json().messages[0].chat_id).toBe('5491144045549@c.us');
-    expect(detailRes.json().messages[0].rendered_text).toBe(
-      'Usted, Ana Pérez registra deuda con Asistodo, regularice enviando un mensaje de whatsapp al 1176560109'
-    );
+    const rendered0: string = detailRes.json().messages[0].rendered_text;
+    expect(rendered0).toContain('Ana Pérez');
+    expect(rendered0).toContain('30111222');
+    expect(rendered0).toContain('Asistodo');
+    expect(rendered0).toContain('1176560109');
 
     // Webhook HMAC inválido -> 401
     const badWebhook = await app.inject({
@@ -247,7 +267,9 @@ describe('HTTP API integration', () => {
       sheet.getRow(1).getCell(1).value,
       sheet.getRow(1).getCell(2).value,
       sheet.getRow(1).getCell(3).value,
-    ]).toEqual(['telefono', 'nombre', 'observacion']);
+      sheet.getRow(1).getCell(4).value,
+      sheet.getRow(1).getCell(5).value,
+    ]).toEqual(['telefono', 'documento', 'apellido', 'nombre', 'observacion']);
 
     const indexRes = await app.inject({ method: 'GET', url: '/' });
     expect(indexRes.statusCode).toBe(200);

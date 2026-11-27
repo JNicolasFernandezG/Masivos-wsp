@@ -161,7 +161,7 @@
               <label for="file-input">Archivo .xlsx o .csv</label>
               <input id="file-input" type="file" accept=".xlsx,.csv,.txt" />
               <p class="hint" id="file-info">
-                Columnas esperadas: <code>telefono</code>, <code>nombre</code> y opcionalmente <code>observacion</code>.
+                Columnas esperadas: <code>telefono</code>, <code>documento</code>, <code>apellido</code>, <code>nombre</code> y opcionalmente <code>observacion</code>.
               </p>
             </div>
 
@@ -170,7 +170,7 @@
               <textarea
                 id="manual-input"
                 rows="7"
-                placeholder="telefono;nombre;observacion&#10;01144045549;Ana Pérez;Cuota vencida&#10;0239615545631;Carlos Gómez;Segundo aviso"
+                placeholder="telefono;documento;apellido;nombre;observacion&#10;01144045549;30111222;Pérez;Ana;Cuota vencida&#10;0239615545631;28444555;Gómez;Carlos;Segundo aviso"
               ></textarea>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-parse-manual">
                 Cargar texto como tabla
@@ -204,15 +204,15 @@
             </div>
 
             <div class="form-group">
-              <label for="template-input">Plantilla del mensaje (usa variables <code>{{columna}}</code>)</label>
+              <label for="template-input">Plantilla del mensaje (variables <code>{{nombre}}</code>, <code>{{apellido}}</code>, <code>{{documento}}</code>; separá variantes con una línea <code>---</code>)</label>
               <div id="variable-chips" class="chips"></div>
               <textarea
                 id="template-input"
-                rows="4"
-                placeholder="Usted, {{nombre}} registra deuda con Asistodo, regularice enviando un mensaje de whatsapp al 1176560109"
+                rows="6"
+                placeholder="Hola {{nombre}} {{apellido}} (Doc. {{documento}}), nos comunicamos de Asistodo para informarte que registrás un saldo pendiente. Podés regularizar tu situación escribiéndonos por WhatsApp al 1176560109."
               ></textarea>
               <p class="hint">
-                Si cargas un archivo grande (ej. 300 filas), el sistema envía tandas de 25 con pausas de hasta 60 min, tope de 125/día y solo en horario comercial.
+                Si dejás múltiples variantes separadas por <code>---</code> (o usás las 10 variantes por defecto), el sistema alterna aleatoriamente entre ellas en cada mensaje.
               </p>
             </div>
 

@@ -4,7 +4,9 @@ import { normalizeOutboundRecipient } from './jidNormalizer.js';
 import {
   analyzeMessageVariety,
   extractTemplateVariables,
+  pickRandomTemplateVariant,
   renderTemplate,
+  splitTemplateVariants,
 } from './templateRenderer.js';
 
 export interface PreviewBatchItem {
@@ -108,6 +110,7 @@ export function prepareBatchPreview(params: PrepareBatchParams): BatchPreviewRes
     ? ''
     : template.trim() || config.defaultMessageTemplate;
 
+  const templateVariants = effectiveTemplate ? splitTemplateVariants(effectiveTemplate) : [];
   const requiredVars = effectiveTemplate
     ? extractTemplateVariables(effectiveTemplate).map((v) => v.toLowerCase())
     : [];
@@ -119,6 +122,7 @@ export function prepareBatchPreview(params: PrepareBatchParams): BatchPreviewRes
   const missingVarSet = new Set<string>();
   let duplicateCount = 0;
   let normalizationWarnings = 0;
+  let lastVariantIndex: number | null = null;
 
   rows.forEach((rawRow, idx) => {
     const rowVariables = toStringRecord(rawRow);
@@ -148,7 +152,9 @@ export function prepareBatchPreview(params: PrepareBatchParams): BatchPreviewRes
     let missingVariables: string[] = [];
 
     if (effectiveTemplate) {
-      const rendered = renderTemplate(effectiveTemplate, rowVariables);
+      const picked = pickRandomTemplateVariant(templateVariants, lastVariantIndex);
+      lastVariantIndex = picked.index;
+      const rendered = renderTemplate(picked.variant || effectiveTemplate, rowVariables);
       renderedText = rendered.renderedText;
       missingVariables = rendered.missingKeys;
       for (const mv of missingVariables) {
