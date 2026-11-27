@@ -16,6 +16,12 @@ export interface WahaSendTextResult {
   raw: unknown;
 }
 
+export interface WahaChatSummary {
+  id: string;
+  name?: string | null;
+  lastMessage?: Record<string, unknown> | null;
+}
+
 export interface WahaClient {
   getSession(session: string): Promise<WahaSessionInfo | null>;
   startSession(session: string): Promise<WahaSessionInfo>;
@@ -26,6 +32,12 @@ export interface WahaClient {
   requestPairingCode(session: string, phoneNumber: string): Promise<{ code: string }>;
   sendText(session: string, chatId: string, text: string): Promise<WahaSendTextResult>;
   resolveLidToPhone(session: string, lid: string): Promise<{ lid: string; pn: string | null } | null>;
+  listChats?(session: string, limit?: number): Promise<WahaChatSummary[]>;
+  getChatMessages?(
+    session: string,
+    chatId: string,
+    limit?: number
+  ): Promise<Record<string, unknown>[]>;
   ping(): Promise<boolean>;
 }
 
@@ -275,5 +287,62 @@ export class HttpWahaClient implements WahaClient {
       }
       return null;
     }
+  }
+
+  async listChats(session: string, limit = 30): Promise<WahaChatSummary[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    let rawList: unknown;
+    try {
+      rawList = await this.requestJson<unknown>(
+        'GET',
+        `/api/${encodeURIComponent(session)}/chats/overview?limit=${safeLimit}`
+      );
+    } catch (err) {
+      if (err instanceof WahaApiError && (err.statusCode === 404 || err.statusCode === 405)) {
+        rawList = await this.requestJson<unknown>(
+          'GET',
+          `/api/${encodeURIComponent(session)}/chats?limit=${safeLimit}`
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    if (!Array.isArray(rawList)) return [];
+    const chats: WahaChatSummary[] = [];
+    for (const item of rawList) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Record<string, unknown>;
+      const rawId =
+        typeof obj.id === 'string'
+          ? obj.id
+          : typeof (obj.id as Record<string, unknown> | undefined)?._serialized === 'string'
+            ? String((obj.id as Record<string, unknown>)._serialized)
+            : '';
+      if (!rawId) continue;
+      chats.push({
+        id: rawId,
+        name: typeof obj.name === 'string' ? obj.name : null,
+        lastMessage:
+          obj.lastMessage && typeof obj.lastMessage === 'object'
+            ? (obj.lastMessage as Record<string, unknown>)
+            : null,
+      });
+    }
+    return chats;
+  }
+
+  async getChatMessages(
+    session: string,
+    chatId: string,
+    limit = 20
+  ): Promise<Record<string, unknown>[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rawList = await this.requestJson<unknown>(
+      'GET',
+      `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages?limit=${safeLimit}&downloadMedia=false`
+    );
+    if (!Array.isArray(rawList)) return [];
+    return rawList.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'));
   }
 }

@@ -6,11 +6,13 @@ import type { MessageDirection, MessageRepository } from '../repositories/messag
 import type { EventBus } from '../services/eventBus.js';
 import { normalizeIncomingJid, normalizeOutboundRecipient } from '../services/jidNormalizer.js';
 import { WahaApiError, type WahaClient } from '../services/wahaClient.js';
+import type { WebhookService } from '../services/webhookService.js';
 
 export interface MessageRouteDeps {
   messageRepo: MessageRepository;
   lidRepo: LidRepository;
   wahaClient: WahaClient;
+  webhookService: WebhookService;
   eventBus: EventBus;
   config: AppConfig;
 }
@@ -132,6 +134,38 @@ export function createMessageRoutes(deps: MessageRouteDeps): FastifyPluginAsync 
           ok: false,
           error:
             err instanceof Error ? err.message : 'No se pudo enviar la respuesta vía WAHA.',
+        });
+      }
+    });
+
+    fastify.post('/api/messages/sync', async (req, reply) => {
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        chatLimit?: unknown;
+        messagesPerChat?: unknown;
+      };
+      const chatLimit =
+        typeof body.chatLimit === 'number' && Number.isFinite(body.chatLimit)
+          ? body.chatLimit
+          : undefined;
+      const messagesPerChat =
+        typeof body.messagesPerChat === 'number' && Number.isFinite(body.messagesPerChat)
+          ? body.messagesPerChat
+          : undefined;
+
+      try {
+        const result = await deps.webhookService.syncMessagesFromWaha(
+          deps.config.wahaSession,
+          { chatLimit, messagesPerChat }
+        );
+        return { ok: true, ...result };
+      } catch (err) {
+        const status = err instanceof WahaApiError ? err.statusCode : 502;
+        return reply.status(status >= 400 ? status : 502).send({
+          ok: false,
+          error:
+            err instanceof Error
+              ? err.message
+              : 'No se pudieron sincronizar los mensajes desde WAHA.',
         });
       }
     });

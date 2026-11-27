@@ -115,6 +115,8 @@ export function prepareBatchPreview(params: PrepareBatchParams): BatchPreviewRes
     ? extractTemplateVariables(effectiveTemplate).map((v) => v.toLowerCase())
     : [];
   const requiresNombre = requiredVars.includes('nombre');
+  const requiresApellido = requiredVars.includes('apellido');
+  const requiresDocumento = requiredVars.includes('documento');
 
   const items: PreviewBatchItem[] = [];
   const validItems: NewOutboundItem[] = [];
@@ -169,6 +171,35 @@ export function prepareBatchPreview(params: PrepareBatchParams): BatchPreviewRes
     }
 
     const nombreVal = findValueCaseInsensitive(rowVariables, ['nombre', 'name', 'cliente']);
+    const apellidoVal = findValueCaseInsensitive(rowVariables, [
+      'apellido',
+      'surname',
+      'lastname',
+      'last_name',
+    ]);
+    const documentoVal = findValueCaseInsensitive(rowVariables, [
+      'documento',
+      'dni',
+      'doc',
+      'cuil',
+      'cuit',
+    ]);
+    const missingRequired: string[] = [];
+    if (requiresNombre && !nombreVal?.trim()) {
+      missingRequired.push('NOMBRE');
+    }
+    if (requiresApellido && !apellidoVal?.trim()) {
+      missingRequired.push('APELLIDO');
+    }
+    if (requiresDocumento) {
+      const docTrimmed = documentoVal?.trim() ?? '';
+      if (!docTrimmed) {
+        missingRequired.push('DOCUMENTO');
+      } else if (!/\d/.test(docTrimmed)) {
+        missingRequired.push('DOCUMENTO (inválido)');
+      }
+    }
+
     let error: string | null = null;
     let duplicate = false;
     let warning: string | null = null;
@@ -180,8 +211,10 @@ export function prepareBatchPreview(params: PrepareBatchParams): BatchPreviewRes
         warning = recipientResult.warning;
         normalizationWarnings += 1;
       }
-      if (requiresNombre && !nombreVal?.trim()) {
-        error = 'Falta el valor de NOMBRE para armar el mensaje.';
+      if (missingRequired.length === 1) {
+        error = `Falta el valor de ${missingRequired[0]} para armar el mensaje.`;
+      } else if (missingRequired.length > 1) {
+        error = `Faltan los valores de ${missingRequired.join(', ')} para armar el mensaje.`;
       } else if (!renderedText) {
         error = 'El mensaje final está vacío.';
       } else if (deduplicate && seenChatIds.has(recipientResult.chatId)) {

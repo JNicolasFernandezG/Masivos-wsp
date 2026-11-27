@@ -12,6 +12,14 @@ export interface WebhookHandleResult {
   message?: StoredMessageRecord;
 }
 
+export interface WahaSyncResult {
+  synced: boolean;
+  sessionStatus: string;
+  chatsScanned: number;
+  importedCount: number;
+  importedIncomingCount: number;
+}
+
 export function verifyWahaHmac(
   rawBody: Buffer,
   signatureHeader: string | undefined,
@@ -250,6 +258,98 @@ export class WebhookService {
       event,
       inserted,
       message: record,
+    };
+  }
+
+  async syncMessagesFromWaha(
+    session: string,
+    options: { chatLimit?: number; messagesPerChat?: number } = {}
+  ): Promise<WahaSyncResult> {
+    if (!this.wahaClient.listChats || !this.wahaClient.getChatMessages) {
+      return {
+        synced: false,
+        sessionStatus: 'UNSUPPORTED',
+        chatsScanned: 0,
+        importedCount: 0,
+        importedIncomingCount: 0,
+      };
+    }
+
+    const sessionInfo = await this.wahaClient.getSession(session);
+    const sessionStatus = sessionInfo?.status ?? 'STOPPED';
+    if (sessionStatus !== 'WORKING') {
+      return {
+        synced: false,
+        sessionStatus,
+        chatsScanned: 0,
+        importedCount: 0,
+        importedIncomingCount: 0,
+      };
+    }
+
+    const chatLimit = Math.max(1, Math.min(100, options.chatLimit ?? 30));
+    const messagesPerChat = Math.max(1, Math.min(50, options.messagesPerChat ?? 20));
+    const chats = await this.wahaClient.listChats(session, chatLimit);
+
+    let chatsScanned = 0;
+    let importedCount = 0;
+    let importedIncomingCount = 0;
+
+    for (const chat of chats) {
+      const normalizedChat = normalizeIncomingJid(chat.id);
+      if (normalizedChat.kind === 'broadcast' || chat.id.endsWith('@newsletter')) {
+        continue;
+      }
+
+      chatsScanned += 1;
+      let rawMessages: Record<string, unknown>[] = [];
+      try {
+        rawMessages = await this.wahaClient.getChatMessages(session, chat.id, messagesPerChat);
+      } catch {
+        rawMessages = [];
+      }
+
+      if (rawMessages.length === 0 && chat.lastMessage) {
+        rawMessages = [chat.lastMessage];
+      }
+
+      for (const rawMsg of rawMessages) {
+        const payload: Record<string, unknown> = {
+          ...rawMsg,
+          chatId:
+            typeof rawMsg.chatId === 'string' && rawMsg.chatId.trim()
+              ? rawMsg.chatId
+              : chat.id,
+          notifyName:
+            typeof rawMsg.notifyName === 'string' && rawMsg.notifyName.trim()
+              ? rawMsg.notifyName
+              : chat.name ?? undefined,
+        };
+
+        try {
+          const res = await this.handleEvent({
+            event: 'message.any',
+            session,
+            payload,
+          });
+          if (res.inserted) {
+            importedCount += 1;
+            if (res.message?.direction === 'IN') {
+              importedIncomingCount += 1;
+            }
+          }
+        } catch {
+          // Ignore individual malformed historical messages during sync
+        }
+      }
+    }
+
+    return {
+      synced: true,
+      sessionStatus,
+      chatsScanned,
+      importedCount,
+      importedIncomingCount,
     };
   }
 }

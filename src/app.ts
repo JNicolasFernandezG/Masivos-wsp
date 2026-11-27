@@ -119,7 +119,9 @@ export function buildApp(options: BuildAppOptions): AppContext {
   app.register(createWahaRoutes({ wahaClient, config }));
   app.register(createWebhookRoutes({ webhookService, config }));
   app.register(createBatchRoutes({ batchRepo, eventBus, worker, config }));
-  app.register(createMessageRoutes({ messageRepo, lidRepo, wahaClient, eventBus, config }));
+  app.register(
+    createMessageRoutes({ messageRepo, lidRepo, wahaClient, webhookService, eventBus, config })
+  );
   app.register(createEventRoutes(eventBus));
 
   const publicDir = options.publicDir ?? path.resolve(process.cwd(), 'public');

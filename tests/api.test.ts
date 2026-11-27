@@ -7,7 +7,7 @@ import { createDatabase } from '../src/db/database.js';
 import { createSsoToken } from '../src/routes/authRoutes.js';
 import type { WahaClient } from '../src/services/wahaClient.js';
 
-function createMockWaha(): WahaClient {
+function createMockWaha(overrides: Partial<WahaClient> = {}): WahaClient {
   return {
     getSession: vi.fn().mockResolvedValue({ name: 'default', status: 'WORKING', engine: 'GOWS' }),
     startSession: vi.fn().mockResolvedValue({ name: 'default', status: 'WORKING' }),
@@ -19,6 +19,7 @@ function createMockWaha(): WahaClient {
     sendText: vi.fn().mockResolvedValue({ id: 'waha-reply-99', raw: { id: 'waha-reply-99' } }),
     resolveLidToPhone: vi.fn().mockResolvedValue(null),
     ping: vi.fn().mockResolvedValue(true),
+    ...overrides,
   };
 }
 
@@ -311,15 +312,37 @@ describe('HTTP API integration', () => {
       method: 'POST',
       url: '/api/batches',
       payload: {
-        name: 'Sin nombre',
-        rows: [{ telefono: '01144045549', observacion: 'falta nombre' }],
+        name: 'Sin datos',
+        rows: [{ telefono: '01144045549', observacion: 'falta nombre, apellido y documento' }],
       },
     });
     expect(missingNameRes.statusCode).toBe(400);
     expect(missingNameRes.json().preview.items[0].error).toContain('NOMBRE');
+    expect(missingNameRes.json().preview.items[0].error).toContain('APELLIDO');
+    expect(missingNameRes.json().preview.items[0].error).toContain('DOCUMENTO');
+
+    const invalidDocRes = await app.inject({
+      method: 'POST',
+      url: '/api/batches',
+      payload: {
+        name: 'Doc inválido',
+        rows: [
+          {
+            telefono: '01144045549',
+            nombre: 'Ana',
+            apellido: 'Pérez',
+            documento: '---',
+          },
+        ],
+      },
+    });
+    expect(invalidDocRes.statusCode).toBe(400);
+    expect(invalidDocRes.json().preview.items[0].error).toContain('DOCUMENTO (inválido)');
 
     const rows60 = Array.from({ length: 60 }, (_, idx) => ({
       telefono: `0114404${String(1000 + idx)}`,
+      documento: String(30000000 + idx),
+      apellido: `Apellido ${idx + 1}`,
       nombre: `Cliente ${idx + 1}`,
       observacion: `Obs ${idx + 1}`,
     }));
@@ -881,6 +904,75 @@ describe('HTTP API integration', () => {
     expect(page3.statusCode).toBe(200);
     expect(page3.json().pagination).toEqual({ page: 3, limit: 2, total: 5, totalPages: 3 });
     expect(page3.json().batches.map((b: { name: string }) => b.name)).toEqual(['Lote 1']);
+
+    await app.close();
+    db.close();
+  });
+
+  it('sincroniza mensajes existentes desde WAHA sin duplicarlos', async () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_PATH: ':memory:',
+      WORKER_ENABLED: 'false',
+    });
+    const db = createDatabase(':memory:');
+    const wahaClient = createMockWaha({
+      listChats: vi.fn().mockResolvedValue([
+        { id: 'status@broadcast', name: 'Estados' },
+        { id: '5491155551111@c.us', name: 'Juan Pérez' },
+      ]),
+      getChatMessages: vi.fn().mockResolvedValue([
+        {
+          id: 'waha-hist-1',
+          from: '5491155551111@c.us',
+          fromMe: false,
+          body: 'Hola, recibí el aviso y quiero regularizar',
+          timestamp: 1763482000,
+        },
+        {
+          id: 'waha-hist-2',
+          to: '5491155551111@c.us',
+          fromMe: true,
+          body: 'Perfecto, te paso los datos',
+          timestamp: 1763482060,
+        },
+      ]),
+    });
+
+    const { app } = buildApp({
+      config,
+      db,
+      wahaClient,
+      logger: false,
+    });
+
+    const firstSync = await app.inject({
+      method: 'POST',
+      url: '/api/messages/sync',
+      payload: { chatLimit: 10, messagesPerChat: 10 },
+    });
+    expect(firstSync.statusCode).toBe(200);
+    expect(firstSync.json()).toMatchObject({
+      ok: true,
+      synced: true,
+      chatsScanned: 1,
+      importedCount: 2,
+      importedIncomingCount: 1,
+    });
+
+    // Segunda sincronización: no debe duplicar mensajes ya importados
+    const secondSync = await app.inject({
+      method: 'POST',
+      url: '/api/messages/sync',
+      payload: {},
+    });
+    expect(secondSync.statusCode).toBe(200);
+    expect(secondSync.json().importedCount).toBe(0);
+
+    const convs = await app.inject({ method: 'GET', url: '/api/conversations' });
+    expect(convs.statusCode).toBe(200);
+    expect(convs.json().conversations).toHaveLength(1);
+    expect(convs.json().conversations[0].chat_id).toBe('5491155551111@c.us');
 
     await app.close();
     db.close();

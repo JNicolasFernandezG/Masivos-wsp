@@ -148,8 +148,6 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $(`tab-${tabId}`).classList.add('active');
 
     if (tabId === 'inbox') {
-      state.unreadInbox = 0;
-      $('inbox-badge').classList.add('hidden');
       loadConversations();
     } else if (tabId === 'waha') {
       loadWahaSession();
@@ -769,7 +767,27 @@ function renderBatchesList(batches) {
       [
         el('div', { className: 'card-header' }, [
           el('strong', { textContent: `#${b.id} · ${b.name}` }),
-          el('span', { className: `status-tag status-${b.status}`, textContent: b.status }),
+          el('div', { className: 'row gap-xs' }, [
+            el('span', { className: `status-tag status-${b.status}`, textContent: b.status }),
+            ...(b.pending_count > 0
+              ? [
+                  el('button', {
+                    type: 'button',
+                    className: 'btn btn-danger btn-sm',
+                    textContent: 'Cancelar lote',
+                    onclick: (e) => {
+                      e.stopPropagation();
+                      const ok = confirm(
+                        `¿Cancelar los ${b.pending_count} envío(s) pendientes del lote #${b.id} (${b.name})?`
+                      );
+                      if (ok) {
+                        batchAction(b.id, 'cancel');
+                      }
+                    },
+                  }),
+                ]
+              : []),
+          ]),
         ]),
         el('div', {
           className: 'muted',
@@ -824,8 +842,15 @@ async function loadBatchDetail(batchId) {
         el('button', {
           type: 'button',
           className: 'btn btn-danger btn-sm',
-          textContent: 'Cancelar pendientes',
-          onclick: () => batchAction(batch.id, 'cancel'),
+          textContent: 'Cancelar lote',
+          onclick: () => {
+            const ok = confirm(
+              `¿Cancelar los ${batch.pending_count} envío(s) pendientes del lote #${batch.id} (${batch.name})?`
+            );
+            if (ok) {
+              batchAction(batch.id, 'cancel');
+            }
+          },
         })
       );
     }
@@ -957,6 +982,16 @@ async function loadConversations() {
     const list = $('conversations-list');
     const conversations = data.conversations || [];
 
+    const unansweredCount = conversations.filter((c) => c.last_direction === 'IN').length;
+    state.unreadInbox = unansweredCount;
+    const badge = $('inbox-badge');
+    if (unansweredCount > 0) {
+      badge.textContent = String(unansweredCount);
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+
     if (conversations.length === 0) {
       list.replaceChildren(
         el('p', { className: 'muted', textContent: 'Aún no hay mensajes registrados.' })
@@ -966,19 +1001,25 @@ async function loadConversations() {
 
     list.replaceChildren();
     for (const c of conversations) {
+      const isUnanswered = c.last_direction === 'IN';
       const title = c.sender_name
         ? `${c.sender_name} (${c.sender_phone || c.chat_id})`
         : c.sender_phone || c.chat_id;
       const item = el(
         'div',
         {
-          className: `conv-item ${state.selectedChatId === c.chat_id ? 'selected' : ''}`,
+          className: `conv-item ${isUnanswered ? 'unanswered' : ''} ${state.selectedChatId === c.chat_id ? 'selected' : ''}`.trim(),
           onclick: () => selectConversation(c.chat_id),
         },
         [
           el('div', { className: 'card-header' }, [
             el('strong', { textContent: title }),
-            el('span', { className: 'muted', textContent: formatDateTime(c.last_timestamp) }),
+            el('div', { className: 'row gap-xs' }, [
+              ...(isUnanswered
+                ? [el('span', { className: 'unanswered-tag', textContent: 'Sin responder' })]
+                : []),
+              el('span', { className: 'muted', textContent: formatDateTime(c.last_timestamp) }),
+            ]),
           ]),
           el('div', {
             className: 'muted',
@@ -1067,6 +1108,44 @@ function resetChatView() {
   );
 }
 
+async function syncWahaMessages({ silent = false } = {}) {
+  const btn = $('btn-sync-inbox');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/messages/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatLimit: 30, messagesPerChat: 20 }),
+    });
+    if (res.synced) {
+      await loadConversations();
+      if (state.selectedChatId) {
+        await selectConversation(state.selectedChatId);
+      }
+      if (!silent) {
+        showAlert(
+          res.importedCount > 0
+            ? `Sincronización completada: se importaron ${res.importedCount} mensaje(s) de ${res.chatsScanned} chat(s).`
+            : `Sincronización completada (${res.chatsScanned} chat(s) revisados, sin mensajes nuevos).`,
+          'ok'
+        );
+      }
+    } else if (!silent) {
+      showAlert(
+        `No se pudo sincronizar: sesión WhatsApp en estado ${res.sessionStatus}.`,
+        'info'
+      );
+    }
+  } catch (err) {
+    if (!silent) {
+      showAlert(err.message, 'err');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+$('btn-sync-inbox').addEventListener('click', () => syncWahaMessages({ silent: false }));
 $('btn-refresh-inbox').addEventListener('click', loadConversations);
 
 $('btn-clear-messages').addEventListener('click', async () => {
@@ -1111,6 +1190,7 @@ $('reply-form').addEventListener('submit', async (e) => {
     $('reply-text').value = '';
     const resolvedChatId = res.message?.chat_id || chatId;
     await selectConversation(resolvedChatId);
+    await loadConversations();
   } catch (err) {
     showAlert(err.message, 'err');
   }
@@ -1227,6 +1307,7 @@ $('login-form').addEventListener('submit', async (e) => {
     connectSse();
     await refreshHealthAndWaha();
     await loadBatches();
+    syncWahaMessages({ silent: true });
   } catch {
     errBox.textContent = 'No se pudo conectar con el servidor.';
     errBox.classList.remove('hidden');
@@ -1277,11 +1358,13 @@ async function initApp() {
     connectSse();
     await refreshHealthAndWaha();
     await loadBatches();
+    syncWahaMessages({ silent: true });
   } catch {
     showWorkspace(false);
     connectSse();
     refreshHealthAndWaha();
     loadBatches();
+    syncWahaMessages({ silent: true });
   }
 }
 
