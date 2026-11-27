@@ -12,17 +12,20 @@ import type { WahaClient } from '../services/wahaClient.js';
 
 export type WorkerPauseReason =
   | 'NONE'
+  | 'MANUAL_PAUSE'
   | 'MESSAGE_JITTER'
   | 'CHUNK_PAUSE'
   | 'DAILY_LIMIT_REACHED'
   | 'OUTSIDE_HOURS'
   | 'NON_BUSINESS_DAY'
-  | 'SESSION_NOT_READY';
+  | 'SESSION_NOT_READY'
+  | 'SESSION_WARMUP';
 
 export interface WorkerRuntimeStatus {
   enabled: boolean;
   running: boolean;
   busy: boolean;
+  manualPaused: boolean;
   sessionStatus: string;
   pauseReason: WorkerPauseReason;
   sentToday: number;
@@ -38,6 +41,7 @@ export interface WorkerRuntimeStatus {
   lastError: string | null;
   minDelayMs: number;
   maxDelayMs: number;
+  sessionWarmupMs: number;
 }
 
 export interface BatchWorkerDeps {
@@ -53,6 +57,50 @@ export interface BatchWorkerDeps {
 
 const STATE_CHUNK_PAUSE_UNTIL = 'chunk_pause_until';
 const STATE_CONSECUTIVE_SENT = 'consecutive_sent_since_chunk_pause';
+const STATE_SESSION_WARMUP_UNTIL = 'session_warmup_until';
+const STATE_MANUAL_PAUSED = 'manual_paused';
+
+function isPrime(n: number): boolean {
+  if (n < 2) return false;
+  if (n === 2) return true;
+  if (n % 2 === 0) return false;
+  for (let i = 3; i * i <= n; i += 2) {
+    if (n % i === 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Generates all unique delays (in ms) resulting from multiplying two prime numbers (p * q seconds)
+ * within [minDelayMs, maxDelayMs].
+ */
+export function getPrimeProductDelaysMs(minDelayMs: number, maxDelayMs: number): number[] {
+  if (maxDelayMs <= 0 || maxDelayMs < minDelayMs) return [];
+  const minSec = Math.max(4, Math.ceil(minDelayMs / 1000));
+  const maxSec = Math.floor(maxDelayMs / 1000);
+  if (maxSec < minSec) return [];
+
+  const maxPrime = Math.floor(maxSec / 2);
+  const primes: number[] = [];
+  for (let n = 2; n <= maxPrime; n += 1) {
+    if (isPrime(n)) {
+      primes.push(n);
+    }
+  }
+
+  const products = new Set<number>();
+  for (let i = 0; i < primes.length; i += 1) {
+    for (let j = i; j < primes.length; j += 1) {
+      const prod = primes[i] * primes[j];
+      if (prod > maxSec) break;
+      if (prod >= minSec) {
+        products.add(prod * 1000);
+      }
+    }
+  }
+
+  return Array.from(products).sort((a, b) => a - b);
+}
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0 || signal.aborted) {
@@ -92,6 +140,7 @@ export class BatchWorker {
 
   private abortController: AbortController | null = null;
   private loopPromise: Promise<void> | null = null;
+  private unsubscribeEvents: (() => void) | null = null;
   private running = false;
   private busy = false;
   private sessionStatus = 'UNKNOWN';
@@ -132,9 +181,68 @@ export class BatchWorker {
     return Number.isFinite(ms) ? ms : null;
   }
 
+  private getSessionWarmupUntilMs(): number | null {
+    const raw = this.deps.batchRepo.getWorkerState(STATE_SESSION_WARMUP_UNTIL);
+    if (!raw) return null;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  private startSessionWarmup(nowMs: number): number {
+    const warmupUntilMs = nowMs + this.deps.config.workerSessionWarmupMs;
+    this.deps.batchRepo.setWorkerState(
+      STATE_SESSION_WARMUP_UNTIL,
+      new Date(warmupUntilMs).toISOString()
+    );
+    this.pauseReason = 'SESSION_WARMUP';
+    this.nextAllowedSendAtMs = warmupUntilMs;
+    this.emitStatus();
+    return warmupUntilMs;
+  }
+
+  handleSessionStatusUpdate(newStatus: string): void {
+    const prevStatus = this.sessionStatus;
+    this.sessionStatus = newStatus;
+    if (
+      newStatus === 'WORKING' &&
+      prevStatus !== 'WORKING' &&
+      this.deps.config.workerSessionWarmupMs > 0
+    ) {
+      const nowMs = this.now();
+      const existing = this.getSessionWarmupUntilMs();
+      if (existing === null || existing <= nowMs) {
+        this.startSessionWarmup(nowMs);
+        return;
+      }
+    }
+    this.emitStatus();
+  }
+
+  isManuallyPaused(): boolean {
+    return this.deps.batchRepo.getWorkerState(STATE_MANUAL_PAUSED) === '1';
+  }
+
+  pauseAll(): WorkerRuntimeStatus {
+    this.deps.batchRepo.setWorkerState(STATE_MANUAL_PAUSED, '1');
+    this.pauseReason = 'MANUAL_PAUSE';
+    this.nextAllowedSendAtMs = null;
+    this.emitStatus();
+    return this.getStatus();
+  }
+
+  resumeAll(): WorkerRuntimeStatus {
+    this.deps.batchRepo.setWorkerState(STATE_MANUAL_PAUSED, null);
+    if (this.pauseReason === 'MANUAL_PAUSE') {
+      this.pauseReason = 'NONE';
+    }
+    this.emitStatus();
+    return this.getStatus();
+  }
+
   getStatus(): WorkerRuntimeStatus {
     const nowMs = this.now();
     const sentToday = this.getSentTodayCount(nowMs);
+    const manualPaused = this.isManuallyPaused();
     const lastSent = this.lastSentAtMs
       ? new Date(this.lastSentAtMs).toISOString()
       : this.deps.batchRepo.getLastSentMessage()?.sent_at ?? null;
@@ -143,8 +251,9 @@ export class BatchWorker {
       enabled: this.deps.config.workerEnabled,
       running: this.running,
       busy: this.busy,
+      manualPaused,
       sessionStatus: this.sessionStatus,
-      pauseReason: this.pauseReason,
+      pauseReason: manualPaused && !this.busy ? 'MANUAL_PAUSE' : this.pauseReason,
       sentToday,
       dailyLimit: this.deps.config.workerDailyLimit,
       chunkSize: this.deps.config.workerChunkSize,
@@ -154,13 +263,14 @@ export class BatchWorker {
       timezone: this.deps.config.timezone,
       lastSentAt: lastSent,
       nextSendAt:
-        this.nextAllowedSendAtMs && this.nextAllowedSendAtMs > nowMs
+        !manualPaused && this.nextAllowedSendAtMs && this.nextAllowedSendAtMs > nowMs
           ? new Date(this.nextAllowedSendAtMs).toISOString()
           : null,
       currentMessageId: this.currentMessageId,
       lastError: this.lastError,
       minDelayMs: this.deps.config.workerMinDelayMs,
       maxDelayMs: this.deps.config.workerMaxDelayMs,
+      sessionWarmupMs: this.deps.config.workerSessionWarmupMs,
     };
   }
 
@@ -173,6 +283,21 @@ export class BatchWorker {
     this.deps.batchRepo.recoverStuckProcessing();
     this.abortController = new AbortController();
     this.running = true;
+    this.unsubscribeEvents = this.deps.eventBus.subscribe((event) => {
+      if (event.type !== 'session.status' || !event.data || typeof event.data !== 'object') {
+        return;
+      }
+      const data = event.data as { session?: unknown; status?: unknown };
+      if (
+        typeof data.session === 'string' &&
+        data.session !== this.deps.config.wahaSession
+      ) {
+        return;
+      }
+      if (typeof data.status === 'string') {
+        this.handleSessionStatusUpdate(data.status);
+      }
+    });
     this.emitStatus();
     this.loopPromise = this.runLoop(this.abortController.signal);
   }
@@ -180,6 +305,8 @@ export class BatchWorker {
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    this.unsubscribeEvents?.();
+    this.unsubscribeEvents = null;
     this.abortController?.abort();
     await this.loopPromise;
     this.loopPromise = null;
@@ -203,6 +330,15 @@ export class BatchWorker {
    */
   async processSingleTick(signal?: AbortSignal): Promise<boolean> {
     const abortSignal = signal ?? new AbortController().signal;
+
+    // 0. Global manual pause check
+    if (this.isManuallyPaused()) {
+      this.pauseReason = 'MANUAL_PAUSE';
+      this.nextAllowedSendAtMs = null;
+      this.emitStatus();
+      return false;
+    }
+
     const nextPending = this.deps.batchRepo.findNextPendingMessage();
     if (!nextPending) {
       this.pauseReason = 'NONE';
@@ -266,7 +402,22 @@ export class BatchWorker {
       this.deps.batchRepo.setWorkerState(STATE_CONSECUTIVE_SENT, '0');
     }
 
-    // 4. Per-message anti-ban jitter (20–60 s)
+    // 3.5. Persistent post-connection session warm-up check
+    let justFinishedWarmup = false;
+    const sessionWarmupUntilMs = this.getSessionWarmupUntilMs();
+    if (sessionWarmupUntilMs !== null) {
+      if (sessionWarmupUntilMs > nowMs) {
+        this.pauseReason = 'SESSION_WARMUP';
+        this.nextAllowedSendAtMs = sessionWarmupUntilMs;
+        this.emitStatus();
+        await this.sleepUntilOrSlice(sessionWarmupUntilMs, abortSignal);
+        return false;
+      }
+      this.deps.batchRepo.setWorkerState(STATE_SESSION_WARMUP_UNTIL, null);
+      justFinishedWarmup = true;
+    }
+
+    // 4. Per-message randomized prime-product delay
     if (this.nextJitterSendAtMs !== null && this.nextJitterSendAtMs > nowMs) {
       this.pauseReason = 'MESSAGE_JITTER';
       this.nextAllowedSendAtMs = this.nextJitterSendAtMs;
@@ -275,7 +426,14 @@ export class BatchWorker {
       if (abortSignal.aborted) return false;
     }
 
-    // Re-check business hours and pending message after sleeping
+    // Re-check manual pause, business hours and pending message after sleeping
+    if (this.isManuallyPaused()) {
+      this.pauseReason = 'MANUAL_PAUSE';
+      this.nextAllowedSendAtMs = null;
+      this.emitStatus();
+      return false;
+    }
+
     const postSleepNow = this.now();
     const postSleepBh = checkBusinessHours(new Date(postSleepNow), this.deps.config);
     if (!postSleepBh.allowed) {
@@ -295,6 +453,7 @@ export class BatchWorker {
     }
 
     // 5. Verify WAHA session is WORKING
+    const prevSessionStatus = this.sessionStatus;
     let sessionReady = false;
     try {
       const session = await this.deps.wahaClient.getSession(this.deps.config.wahaSession);
@@ -313,6 +472,17 @@ export class BatchWorker {
       this.pauseReason = 'SESSION_NOT_READY';
       this.emitStatus();
       await this.sleep(Math.max(this.deps.config.workerPollIntervalMs, 5000), abortSignal);
+      return false;
+    }
+
+    // Trigger post-connection warm-up when session transitions into WORKING
+    if (
+      !justFinishedWarmup &&
+      prevSessionStatus !== 'WORKING' &&
+      this.deps.config.workerSessionWarmupMs > 0
+    ) {
+      const warmupUntilMs = this.startSessionWarmup(this.now());
+      await this.sleepUntilOrSlice(warmupUntilMs, abortSignal);
       return false;
     }
 
@@ -370,12 +540,21 @@ export class BatchWorker {
     }
   }
 
+  private computeNextMessageDelayMs(): number {
+    const minMs = this.deps.config.workerMinDelayMs;
+    const maxMs = this.deps.config.workerMaxDelayMs;
+    const primeProducts = getPrimeProductDelaysMs(minMs, maxMs);
+    if (primeProducts.length > 0) {
+      const idx = this.randomInt(0, primeProducts.length - 1);
+      const safeIdx = Math.max(0, Math.min(primeProducts.length - 1, idx));
+      return primeProducts[safeIdx];
+    }
+    return this.randomInt(minMs, maxMs);
+  }
+
   private scheduleAfterSend(succeeded: boolean): void {
     const nowMs = this.now();
-    const jitterMs = this.randomInt(
-      this.deps.config.workerMinDelayMs,
-      this.deps.config.workerMaxDelayMs
-    );
+    const jitterMs = this.computeNextMessageDelayMs();
     this.nextJitterSendAtMs = nowMs + jitterMs;
 
     if (succeeded) {

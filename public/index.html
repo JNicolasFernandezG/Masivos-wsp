@@ -82,7 +82,24 @@
           <div class="card">
             <div class="card-header">
               <h2>Lotes registrados</h2>
-              <div class="row gap-xs">
+              <div class="row wrap gap-xs">
+                <button
+                  class="btn btn-secondary btn-sm"
+                  id="btn-pause-all-batches"
+                  type="button"
+                  title="Pausa temporalmente el envío de todos los lotes en cola"
+                >
+                  Pausar envíos
+                </button>
+                <button
+                  class="btn btn-primary btn-sm"
+                  id="btn-resume-all-batches"
+                  type="button"
+                  title="Reanuda el envío de los lotes en cola"
+                  disabled
+                >
+                  Continuar envíos
+                </button>
                 <button class="btn btn-secondary btn-sm" id="btn-refresh-batches" type="button">
                   Actualizar
                 </button>

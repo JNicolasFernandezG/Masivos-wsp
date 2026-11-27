@@ -26,6 +26,7 @@ const envSchema = z.object({
 
   WORKER_MIN_DELAY_MS: z.coerce.number().int().min(0).default(20000),
   WORKER_MAX_DELAY_MS: z.coerce.number().int().min(0).default(60000),
+  WORKER_SESSION_WARMUP_MS: z.coerce.number().int().min(0).default(300000),
   WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(200).default(3000),
   WORKER_CHUNK_SIZE: z.coerce.number().int().min(1).default(25),
   WORKER_CHUNK_PAUSE_MIN_MS: z.coerce.number().int().min(0).default(2700000),
@@ -77,6 +78,7 @@ export interface AppConfig {
   defaultMessageTemplate: string;
   workerMinDelayMs: number;
   workerMaxDelayMs: number;
+  workerSessionWarmupMs: number;
   workerPollIntervalMs: number;
   workerChunkSize: number;
   workerChunkPauseMinMs: number;
@@ -136,6 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       parsed.DEFAULT_MESSAGE_TEMPLATE.trim() || FALLBACK_DEFAULT_MESSAGE_TEMPLATE,
     workerMinDelayMs: minDelay,
     workerMaxDelayMs: maxDelay,
+    workerSessionWarmupMs: parsed.WORKER_SESSION_WARMUP_MS,
     workerPollIntervalMs: parsed.WORKER_POLL_INTERVAL_MS,
     workerChunkSize: parsed.WORKER_CHUNK_SIZE,
     workerChunkPauseMinMs: chunkPauseMin,

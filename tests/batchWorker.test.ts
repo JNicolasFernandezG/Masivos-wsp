@@ -5,7 +5,7 @@ import { BatchRepository } from '../src/repositories/batchRepository.js';
 import { EventBus } from '../src/services/eventBus.js';
 import { getLocalClock, getStartOfLocalDayUtc } from '../src/services/businessHours.js';
 import type { WahaClient } from '../src/services/wahaClient.js';
-import { BatchWorker } from '../src/worker/batchWorker.js';
+import { BatchWorker, getPrimeProductDelaysMs } from '../src/worker/batchWorker.js';
 
 function makeConfig(overrides: Record<string, string> = {}) {
   return loadConfig({
@@ -14,6 +14,7 @@ function makeConfig(overrides: Record<string, string> = {}) {
     TZ: 'America/Argentina/Buenos_Aires',
     WORKER_MIN_DELAY_MS: '20000',
     WORKER_MAX_DELAY_MS: '60000',
+    WORKER_SESSION_WARMUP_MS: '0',
     WORKER_POLL_INTERVAL_MS: '500',
     WORKER_CHUNK_SIZE: '25',
     WORKER_CHUNK_PAUSE_MIN_MS: '2700000',
@@ -73,9 +74,9 @@ describe('BatchWorker', () => {
       nowFn: () => fakeNow,
       maxSleepSliceMs: Number.POSITIVE_INFINITY,
       randomIntFn: (min, max) => {
-        expect(min).toBe(20000);
-        expect(max).toBe(60000);
-        return 35000;
+        expect(min).toBe(0);
+        expect(max).toBe(14); // 15 productos de primos entre 20s y 60s
+        return 6; // índice 6 => 35000 ms (5 * 7 s)
       },
       sleepFn: async (ms) => {
         sleepCalls.push(ms);
@@ -399,6 +400,161 @@ describe('BatchWorker', () => {
     expect(await worker.processSingleTick()).toBe(false);
     expect(worker.getStatus().pauseReason).toBe('DAILY_LIMIT_REACHED');
     expect(sendText).toHaveBeenCalledTimes(2);
+    db.close();
+  });
+
+  it('genera demoras válidas basadas en la multiplicación de dos números primos', () => {
+    const delays = getPrimeProductDelaysMs(20000, 60000);
+    expect(delays).toEqual([
+      21000, // 3 * 7
+      22000, // 2 * 11
+      25000, // 5 * 5
+      26000, // 2 * 13
+      33000, // 3 * 11
+      34000, // 2 * 17
+      35000, // 5 * 7
+      38000, // 2 * 19
+      39000, // 3 * 13
+      46000, // 2 * 23
+      49000, // 7 * 7
+      51000, // 3 * 17
+      55000, // 5 * 11
+      57000, // 3 * 19
+      58000, // 2 * 29
+    ]);
+    expect(getPrimeProductDelaysMs(0, 0)).toEqual([]);
+  });
+
+  it('espera el tiempo de warm-up post-conexión al pasar a WORKING antes de enviar el primer mensaje', async () => {
+    const db = createDatabase(':memory:');
+    const batchRepo = new BatchRepository(db);
+    const eventBus = new EventBus();
+    const config = makeConfig({
+      WORKER_SESSION_WARMUP_MS: '300000', // 5 minutos
+    });
+
+    let currentSessionStatus = 'SCAN_QR_CODE';
+    const sendText = vi.fn().mockResolvedValue({ id: 'wamid-after-warmup', raw: {} });
+    const wahaClient = makeMockWaha({
+      getSession: vi.fn().mockImplementation(async () => ({
+        name: 'default',
+        status: currentSessionStatus,
+      })),
+      sendText,
+    });
+
+    let fakeNow = Date.parse('2026-11-19T13:00:00.000Z');
+    const sleepCalls: number[] = [];
+
+    const createWorker = () =>
+      new BatchWorker({
+        batchRepo,
+        wahaClient,
+        eventBus,
+        config,
+        nowFn: () => fakeNow,
+        maxSleepSliceMs: Number.POSITIVE_INFINITY,
+        sleepFn: async (ms) => {
+          sleepCalls.push(ms);
+          fakeNow += ms;
+        },
+      });
+
+    batchRepo.createBatch({
+      name: 'Lote post-QR',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01111111111',
+          phoneNormalized: '5491111111111',
+          chatId: '5491111111111@c.us',
+          variables: {},
+          renderedText: 'Primer mensaje tras conectar',
+        },
+      ],
+    });
+
+    const worker = createWorker();
+
+    // 1. Mientras espera escaneo de QR no envía nada
+    expect(await worker.processSingleTick()).toBe(false);
+    expect(worker.getStatus().pauseReason).toBe('SESSION_NOT_READY');
+    expect(sendText).not.toHaveBeenCalled();
+
+    // 2. Se conecta WhatsApp (pasa a WORKING): activa espera post-conexión de 5 min y NO envía todavía
+    currentSessionStatus = 'WORKING';
+    const beforeWarmup = fakeNow;
+    expect(await worker.processSingleTick()).toBe(false);
+    expect(worker.getStatus().pauseReason).toBe('SESSION_WARMUP');
+    expect(sendText).not.toHaveBeenCalled();
+    expect(fakeNow - beforeWarmup).toBe(300000);
+
+    // 3. Una vez transcurrida la espera (incluso tras reinicio), envía el primer mensaje sin volver a esperar
+    const restartedWorker = createWorker();
+    expect(await restartedWorker.processSingleTick()).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it('permite pausar y continuar manualmente todos los envíos y persiste tras reinicio', async () => {
+    const db = createDatabase(':memory:');
+    const batchRepo = new BatchRepository(db);
+    const eventBus = new EventBus();
+    const config = makeConfig({
+      BUSINESS_HOURS_ENABLED: 'false',
+      WORKER_MIN_DELAY_MS: '0',
+      WORKER_MAX_DELAY_MS: '0',
+    });
+
+    const sendText = vi.fn().mockResolvedValue({ id: 'wamid-manual', raw: {} });
+    const wahaClient = makeMockWaha({ sendText });
+
+    const createWorker = () =>
+      new BatchWorker({
+        batchRepo,
+        wahaClient,
+        eventBus,
+        config,
+        sleepFn: async () => undefined,
+      });
+
+    batchRepo.createBatch({
+      name: 'Lote pausa global',
+      source: 'api',
+      template: null,
+      items: [
+        {
+          chunkIndex: 1,
+          recipientRaw: '01111111111',
+          phoneNormalized: '5491111111111',
+          chatId: '5491111111111@c.us',
+          variables: {},
+          renderedText: 'Mensaje 1',
+        },
+      ],
+    });
+
+    const worker = createWorker();
+    const pausedStatus = worker.pauseAll();
+    expect(pausedStatus.manualPaused).toBe(true);
+    expect(pausedStatus.pauseReason).toBe('MANUAL_PAUSE');
+
+    expect(await worker.processSingleTick()).toBe(false);
+    expect(sendText).not.toHaveBeenCalled();
+
+    // Tras reinicio, la pausa manual sigue activa
+    const restartedWorker = createWorker();
+    expect(restartedWorker.getStatus().manualPaused).toBe(true);
+    expect(await restartedWorker.processSingleTick()).toBe(false);
+    expect(sendText).not.toHaveBeenCalled();
+
+    // Al reanudar, envía normalmente
+    const resumedStatus = restartedWorker.resumeAll();
+    expect(resumedStatus.manualPaused).toBe(false);
+    expect(await restartedWorker.processSingleTick()).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(1);
     db.close();
   });
 });

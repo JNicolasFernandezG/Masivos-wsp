@@ -243,6 +243,16 @@ export function createBatchRoutes(deps: BatchRouteDeps): FastifyPluginAsync {
       });
     });
 
+    fastify.post('/api/worker/pause', async () => {
+      const worker = deps.worker.pauseAll();
+      return { ok: true, worker };
+    });
+
+    fastify.post('/api/worker/resume', async () => {
+      const worker = deps.worker.resumeAll();
+      return { ok: true, worker };
+    });
+
     fastify.post('/api/batches/:id/pause', async (req, reply) => {
       const id = Number((req.params as { id: string }).id);
       if (!Number.isInteger(id) || id <= 0) {

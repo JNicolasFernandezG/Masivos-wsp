@@ -197,9 +197,22 @@ function updateWorkerPill(worker) {
     dailyPill.className = sent >= limit ? 'pill warn' : 'pill ok';
   }
 
+  const pauseAllBtn = $('btn-pause-all-batches');
+  const resumeAllBtn = $('btn-resume-all-batches');
+  if (pauseAllBtn && resumeAllBtn) {
+    const isPaused = Boolean(worker.manualPaused || worker.pauseReason === 'MANUAL_PAUSE');
+    pauseAllBtn.disabled = !worker.enabled || isPaused;
+    resumeAllBtn.disabled = !worker.enabled || !isPaused;
+  }
+
   if (!worker.enabled) {
     pill.className = 'pill warn';
     txt.textContent = 'Deshabilitado';
+    return;
+  }
+  if (worker.manualPaused || worker.pauseReason === 'MANUAL_PAUSE') {
+    pill.className = 'pill warn';
+    txt.textContent = worker.busy ? 'Pausando tras envío actual...' : 'Pausado manualmente';
     return;
   }
   if (worker.busy && worker.currentMessageId) {
@@ -231,6 +244,11 @@ function updateWorkerPill(worker) {
   if (worker.pauseReason === 'SESSION_NOT_READY') {
     pill.className = 'pill warn';
     txt.textContent = `Esperando sesión (${worker.sessionStatus})`;
+    return;
+  }
+  if (worker.pauseReason === 'SESSION_WARMUP' && remainingSec > 0) {
+    pill.className = 'pill warn';
+    txt.textContent = `Espera post-conexión: ${formatSeconds(remainingSec)}`;
     return;
   }
   if (remainingSec > 0) {
@@ -863,6 +881,36 @@ async function batchAction(batchId, action) {
     showAlert(err.message, 'err');
   }
 }
+
+$('btn-pause-all-batches').addEventListener('click', async () => {
+  const btn = $('btn-pause-all-batches');
+  btn.disabled = true;
+  try {
+    const data = await apiFetch('/api/worker/pause', { method: 'POST' });
+    if (data.worker) {
+      updateWorkerPill(data.worker);
+    }
+    showAlert('Envíos de lotes pausados manualmente.', 'info');
+  } catch (err) {
+    showAlert(err.message, 'err');
+    btn.disabled = false;
+  }
+});
+
+$('btn-resume-all-batches').addEventListener('click', async () => {
+  const btn = $('btn-resume-all-batches');
+  btn.disabled = true;
+  try {
+    const data = await apiFetch('/api/worker/resume', { method: 'POST' });
+    if (data.worker) {
+      updateWorkerPill(data.worker);
+    }
+    showAlert('Envíos de lotes reanudados.', 'ok');
+  } catch (err) {
+    showAlert(err.message, 'err');
+    btn.disabled = false;
+  }
+});
 
 $('btn-refresh-batches').addEventListener('click', () => loadBatches(state.batchesPage));
 
