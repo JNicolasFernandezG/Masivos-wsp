@@ -313,6 +313,12 @@ export class WebhookService {
         rawMessages = [chat.lastMessage];
       }
 
+      rawMessages.sort((a, b) => {
+        const ta = typeof a.timestamp === 'number' ? a.timestamp : 0;
+        const tb = typeof b.timestamp === 'number' ? b.timestamp : 0;
+        return ta - tb;
+      });
+
       for (const rawMsg of rawMessages) {
         const payload: Record<string, unknown> = {
           ...rawMsg,

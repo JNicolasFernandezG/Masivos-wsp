@@ -118,4 +118,65 @@ describe('webhookService', () => {
     expect(resolveLidToPhone).toHaveBeenCalledTimes(1);
     db.close();
   });
+
+  it('muestra siempre el último mensaje por timestamp_unix (no por id) y evita duplicados por contenido/timestamp', async () => {
+    const db = createDatabase(':memory:');
+    const messageRepo = new MessageRepository(db);
+    const lidRepo = new LidRepository(db);
+    const eventBus = new EventBus();
+    const wahaClient = createMockWahaClient();
+    const service = new WebhookService(messageRepo, lidRepo, wahaClient, eventBus);
+
+    // 1. Primero se inserta el mensaje entrante MÁS RECIENTE (18:30)
+    await service.handleEvent({
+      event: 'message',
+      session: 'default',
+      payload: {
+        id: 'wamid-in-newer',
+        timestamp: 1764192602,
+        from: '5491171393671@c.us',
+        chatId: '5491171393671@c.us',
+        body: 'A mí me debitan de mí tarjeta',
+        fromMe: false,
+        _data: { notifyName: 'Rosi' },
+      },
+    });
+
+    // 2. Después (ej. por sync histórico) se inserta un mensaje saliente MÁS VIEJO (16:31)
+    await service.handleEvent({
+      event: 'message.any',
+      session: 'default',
+      payload: {
+        id: 'wamid-out-older-1',
+        timestamp: 1764185479,
+        to: '5491171393671@c.us',
+        chatId: '5491171393671@c.us',
+        body: 'Usted registra deuda con Asistodo',
+        fromMe: true,
+      },
+    });
+
+    // 3. Mismo mensaje saliente con otro formato de ID en el mismo segundo -> no debe duplicar
+    const dup = await service.handleEvent({
+      event: 'message.any',
+      session: 'default',
+      payload: {
+        id: 'true_5491171393671@c.us_wamid-out-older-1',
+        timestamp: 1764185479,
+        to: '5491171393671@c.us',
+        chatId: '5491171393671@c.us',
+        body: 'Usted registra deuda con Asistodo',
+        fromMe: true,
+      },
+    });
+    expect(dup.inserted).toBe(false);
+
+    const convs = messageRepo.listConversations(10);
+    expect(convs).toHaveLength(1);
+    expect(convs[0].last_direction).toBe('IN');
+    expect(convs[0].last_body).toBe('A mí me debitan de mí tarjeta');
+    expect(convs[0].last_timestamp).toBe(1764192602);
+    expect(convs[0].message_count).toBe(2);
+    db.close();
+  });
 });

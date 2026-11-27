@@ -68,6 +68,27 @@ export class MessageRepository {
       }
     }
 
+    if (input.body.trim()) {
+      const duplicateByContent = this.db
+        .prepare(
+          `SELECT * FROM messages
+           WHERE chat_id = ? AND from_me = ? AND timestamp_unix = ? AND body = ?
+           LIMIT 1`
+        )
+        .get(
+          input.chatId,
+          input.fromMe ? 1 : 0,
+          input.timestampUnix,
+          input.body
+        ) as Record<string, unknown> | undefined;
+      if (duplicateByContent) {
+        return {
+          record: toPlainRow(duplicateByContent) as unknown as StoredMessageRecord,
+          inserted: false,
+        };
+      }
+    }
+
     const res = this.db
       .prepare(
         `INSERT INTO messages (
@@ -147,29 +168,35 @@ export class MessageRepository {
   listConversations(limit = 50): ConversationSummary[] {
     const rows = this.db
       .prepare(
-        `SELECT
-          m.chat_id,
+        `WITH ranked AS (
+          SELECT
+            m.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY m.chat_id
+              ORDER BY m.timestamp_unix DESC, m.id DESC
+            ) AS rn,
+            COUNT(*) OVER (PARTITION BY m.chat_id) AS message_count
+          FROM messages m
+        )
+        SELECT
+          r.chat_id,
           (
             SELECT m2.sender_phone FROM messages m2
-            WHERE m2.chat_id = m.chat_id AND m2.sender_phone IS NOT NULL
+            WHERE m2.chat_id = r.chat_id AND m2.sender_phone IS NOT NULL
             ORDER BY m2.timestamp_unix DESC, m2.id DESC LIMIT 1
           ) AS sender_phone,
           (
             SELECT m2.sender_name FROM messages m2
-            WHERE m2.chat_id = m.chat_id AND m2.sender_name IS NOT NULL AND m2.from_me = 0
+            WHERE m2.chat_id = r.chat_id AND m2.sender_name IS NOT NULL AND m2.from_me = 0
             ORDER BY m2.timestamp_unix DESC, m2.id DESC LIMIT 1
           ) AS sender_name,
-          m.body AS last_body,
-          m.direction AS last_direction,
-          m.timestamp_unix AS last_timestamp,
-          counts.message_count AS message_count
-        FROM messages m
-        INNER JOIN (
-          SELECT chat_id, MAX(id) AS max_id, COUNT(*) AS message_count
-          FROM messages
-          GROUP BY chat_id
-        ) counts ON counts.max_id = m.id
-        ORDER BY m.timestamp_unix DESC, m.id DESC
+          r.body AS last_body,
+          r.direction AS last_direction,
+          r.timestamp_unix AS last_timestamp,
+          r.message_count AS message_count
+        FROM ranked r
+        WHERE r.rn = 1
+        ORDER BY r.timestamp_unix DESC, r.id DESC
         LIMIT ?`
       )
       .all(limit) as Record<string, unknown>[];
